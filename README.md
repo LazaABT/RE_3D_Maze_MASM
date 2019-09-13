@@ -1,1 +1,2 @@
-# RE_3D_Maze_MASM
+# Projekat iz Računarske elektronike
+# Igrica 3d lavirint u MASM sa Irvine.inc bibliotekom
