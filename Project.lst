@@ -1,0 +1,1750 @@
+Microsoft (R) Macro Assembler Version 14.14.26431.0	    09/14/19 19:31:12
+RE_Projekat.asm						     Page 1 - 1
+
+
+				INCLUDE Irvine32.inc
+			      C ; Include file for Irvine32.lib             (Irvine32.inc)
+			      C 
+			      C ;OPTION CASEMAP:NONE		; optional: make identifiers case-sensitive
+			      C 
+			      C INCLUDE SmallWin.inc		; MS-Windows prototypes, structures, and constants
+			      C .NOLIST
+			      C .LIST
+			      C 
+			      C INCLUDE VirtualKeys.inc
+			      C ; VirtualKeys.inc
+			      C .NOLIST
+			      C .LIST
+			      C 
+			      C 
+			      C .NOLIST
+			      C .LIST
+			      C 
+
+
+				.386
+				.model flat, stdcall
+RE_Projekat.asm(5) : warning A4011:multiple .MODEL directives found : .MODEL ignored
+				.stack 4096
+				ExitProcess proto, dwExitCode:dword
+
+
+ = 000000BE			SCR_WIDTH = 190; Target width of the screen
+ = 00000032			SCR_HEIGHT = 50; Target height of the screen
+ = 0000001F			MAZE_HEIGHT = 31; Dimension of maze
+ = 00000023			FILE_WALL_CHAR = '#'; Character that is recognized as wall in maze file
+ = 00000020			FILE_SPACE_CHAR = ' ';Not critical, used for internal maze generation
+				; Maze file
+
+ = 00000014			POLLING_PERIOD = 20; Wait time before keyboard event check[ms]
+ = 000000B0			CHR_FOG = 176; Character for potential walls out of view
+ = 000000B1			CHR_NS_WALL = 177; Character that is drawn for north and south walls
+ = 000000B2			CHR_EW_WALL = 178; Character that is drawn for east and west walls
+ = 00000007			COL_MAZE = lightGray + (black * 16); Color of maze map and 3d view, lower nibble is foreground, higher nibble is background
+ = 00000070			COL_ARROW = black + (lightGray * 16); Color of maze map and 3d view, lower nibble is foreground, higher nibble is background
+
+ = 0000009F			SCR_3D_WIDTH = SCR_WIDTH - MAZE_HEIGHT ; Efective width of 3d view
+ = 00000008			MAZE_Y_OFFSET = (SCR_HEIGHT - MAZE_HEIGHT) / 2 - 1; Parameter for centering maze
+ = 00000006			DRAW_DEPTH = 6; How many walls are drawn from current position + current position
+ = 00000003			DRAW_WIDTH = 3; How far to each side are walls drawn
+ = "maze.txt"			MAZE_PATH EQU "maze.txt"
+
+ 00000000			.DATA
+ 00000000  0000257E [		screen_buffer BYTE SCR_HEIGHT*(SCR_WIDTH + 2) - 2 dup(0); Screen buffer for 3d view and maze map
+	    00
+	   ]
+ 0000257E  00000400 [		maze BYTE MAZE_HEIGHT*(MAZE_HEIGHT + 2) + 1 dup(0); Location for storing maze in memory from file
+	    00
+	   ]
+
+ 0000297E			.DATA
+ 0000297E 6D 61 7A 65 2E	maze_file_name BYTE MAZE_PATH, 0
+	   74 78 74 00
+ 00002987 45 6E 63 6F 75	maze_file_error_msg BYTE "Encountered error while loading file ", MAZE_PATH, 0
+	   6E 74 65 72 65
+	   64 20 65 72 72
+	   6F 72 20 77 68
+	   69 6C 65 20 6C
+	   6F 61 64 69 6E
+	   67 20 66 69 6C
+	   65 20 6D 61 7A
+	   65 2E 74 78 74
+	   00
+
+ 000029B5			.DATA
+ 000029B5 0001			direction WORD 0001h; Direction of movement stored as a vector, lower byte is dx, higher byte is dy
+ 000029B7 0101			position WORD 0101h; Current position, lower byte is x, higher byte is y
+ 000029B9 00B1			char_facing_wall WORD CHR_NS_WALL
+ 000029BB 00B2			char_side_wall WORD CHR_EW_WALL
+
+				;Used for maze generation
+ 000029BD			.data
+ 000029BD  000001F0 [		wildcards WORD MAZE_HEIGHT*(MAZE_HEIGHT+1)/2	dup(0)
+	    0000
+	   ]
+ 00002D9D 0000			no_wildcard WORD 0
+
+ 00002D9F			.data
+ 00002D9F 6D 61 7A 65 5F	out_file_name BYTE "maze_out.txt",0
+	   6F 75 74 2E 74
+	   78 74 00
+ 00002DAC 4D 61 7A 65 20	out_file_msg BYTE "Maze saved to file",0
+	   73 61 76 65 64
+	   20 74 6F 20 66
+	   69 6C 65 00
+
+ 00000000			.code
+ 00000000			maze_print PROC uses edx eax
+ 00000000  52		   *	    push   edx
+ 00000001  50		   *	    push   eax
+ 00000002  33 D2		xor edx,edx
+ 00000004  E8 00000000 E	call gotoxy
+ 00000009			print_loop:
+ 00000009  E8 000002D0		call maze_read
+ 0000000E  E8 00000000 E	call writeChar
+ 00000013  FE C2		inc dl
+ 00000015  80 FA 1F		cmp dl,MAZE_HEIGHT
+ 00000018  72 EF		jb print_loop
+ 0000001A  32 D2		xor dl,dl
+ 0000001C  FE C6		inc dh
+ 0000001E  B0 0D		mov al,0Dh
+ 00000020  E8 00000000 E	call writeChar
+ 00000025  B0 0A		mov al,0Ah
+ 00000027  80 FE 1F		cmp dh,MAZE_HEIGHT
+ 0000002A  E8 00000000 E	call writeChar
+ 0000002F  72 D8		jb print_loop
+				ret
+ 00000031  58		   *	    pop    eax
+ 00000032  5A		   *	    pop    edx
+ 00000033  C3		   *	    ret    00000h
+ 00000034			maze_print ENDP
+
+ 00000034			maze_write PROC uses edx; pos passed throug dl, dh, char returned through al
+ 00000034  52		   *	    push   edx
+ 00000035  52			push edx
+ 00000036  50			push eax
+ 00000037  66| B8 0021		mov ax, MAZE_HEIGHT + 2
+ 0000003B  F6 E6		mul dh
+ 0000003D  32 F6		xor dh, dh
+ 0000003F  66| 03 C2		add ax, dx
+ 00000042  0F B7 D0		movzx edx, ax
+ 00000045  58			pop eax
+ 00000046  88 82 0000257E R	mov BYTE PTR maze[edx], al
+ 0000004C  5A			pop edx
+				ret
+ 0000004D  5A		   *	    pop    edx
+ 0000004E  C3		   *	    ret    00000h
+ 0000004F			maze_write ENDP
+
+ 0000004F			maze_initialize PROC uses eax edx
+				;Sets all to zeros
+ 0000004F  50		   *	    push   eax
+ 00000050  52		   *	    push   edx
+ 00000051  33 D2		xor edx,edx
+ 00000053  33 C0		xor eax,eax
+ 00000055			blank_loop_y :
+ 00000055  32 D2		xor dl, dl
+ 00000057			blank_loop_x :
+ 00000057  E8 FFFFFFD8		call maze_write
+ 0000005C  FE C2		inc dl
+ 0000005E  80 FA 1F		cmp dl, MAZE_HEIGHT
+ 00000061  72 F4		jb blank_loop_x
+ 00000063  FE C6		inc dh
+ 00000065  80 FE 1F		cmp dh, MAZE_HEIGHT
+ 00000068  72 EB		jb blank_loop_y
+				;Sets permanent walls
+ 0000006A  66| 33 D2		xor dx,dx
+ 0000006D  B0 23		mov al, FILE_WALL_CHAR
+ 0000006F			wall_loop_y :
+ 0000006F  32 D2		xor dl, dl
+ 00000071			wall_loop_x :
+ 00000071  E8 FFFFFFBE		call maze_write
+ 00000076  80 C2 02		add dl, 2
+ 00000079  80 FA 1F		cmp dl, MAZE_HEIGHT
+ 0000007C  72 F3		jb wall_loop_x
+ 0000007E  80 C6 02		add dh, 2
+ 00000081  80 FE 1F		cmp dh, MAZE_HEIGHT
+ 00000084  72 E9		jb wall_loop_y
+				;Sets permanent spaces
+ 00000086  66| BA 0101		mov dx,0101h
+ 0000008A  B0 20		mov al, FILE_SPACE_CHAR
+ 0000008C			space_loop_y :
+ 0000008C  B2 01		mov dl,01h
+ 0000008E			space_loop_x :
+ 0000008E  E8 FFFFFFA1		call maze_write
+ 00000093  80 C2 02		add dl, 2
+ 00000096  80 FA 1F		cmp dl, MAZE_HEIGHT
+ 00000099  72 F3		jb space_loop_x
+ 0000009B  80 C6 02		add dh, 2
+ 0000009E  80 FE 1F		cmp dh, MAZE_HEIGHT
+ 000000A1  72 E9		jb space_loop_y
+ 000000A3  66| 33 D2		xor dx,dx
+				;Sets side and top walls
+ 000000A6  B0 23		mov al,FILE_WALL_CHAR
+ 000000A8			loop_init:
+ 000000A8  32 F6		xor dh,dh
+ 000000AA  E8 FFFFFF85		call maze_write
+ 000000AF  86 F2		xchg dh,dl
+ 000000B1  E8 FFFFFF7E		call maze_write
+ 000000B6  B2 1E		mov dl,MAZE_HEIGHT-1
+ 000000B8  E8 FFFFFF77		call maze_write
+ 000000BD  86 D6		xchg dl,dh
+ 000000BF  E8 FFFFFF70		call maze_write
+ 000000C4  FE C2		inc dl
+ 000000C6  80 FA 1F		cmp dl,MAZE_HEIGHT
+ 000000C9  72 DD		jb loop_init
+				ret
+ 000000CB  5A		   *	    pop    edx
+ 000000CC  58		   *	    pop    eax
+ 000000CD  C3		   *	    ret    00000h
+ 000000CE			maze_initialize ENDP
+
+ 000000CE			load_wildcards PROC uses edx eax
+ 000000CE  52		   *	    push   edx
+ 000000CF  50		   *	    push   eax
+ 000000D0  33 D2		xor edx,edx
+ 000000D2  33 FF		xor edi,edi
+ 000000D4			wildcard_loop:
+ 000000D4  E8 00000205		call maze_read
+ 000000D9  66| 83 F8 00		cmp ax, 0
+ 000000DD  75 0A		jne @F
+ 000000DF  66| 89 97		mov WORD PTR wildcards[edi], dx
+	   000029BD R
+ 000000E6  83 C7 02		add edi,2
+ 000000E9			@@:
+ 000000E9  FE C2		inc dl
+ 000000EB  80 FA 1F		cmp dl,MAZE_HEIGHT
+ 000000EE  72 E4		jb wildcard_loop
+ 000000F0  32 D2		xor dl,dl
+ 000000F2  FE C6		inc dh
+ 000000F4  80 FE 1F		cmp dh,MAZE_HEIGHT
+ 000000F7  72 DB		jb wildcard_loop
+ 000000F9  D1 EF		shr edi, 1
+				ret
+ 000000FB  58		   *	    pop    eax
+ 000000FC  5A		   *	    pop    edx
+ 000000FD  C3		   *	    ret    00000h
+ 000000FE			load_wildcards ENDP
+
+ 000000FE			find_pair PROC uses edx ecx eax poz1:word, poz2:word
+				local	dir:word
+ 000000FE  55		   *	    push   ebp
+ 000000FF  8B EC	   *	    mov    ebp, esp
+ 00000101  83 C4 FC	   *	    add    esp, 0FFFFFFFCh
+ 00000104  52		   *	    push   edx
+ 00000105  51		   *	    push   ecx
+ 00000106  50		   *	    push   eax
+ 00000107  66| 8B 55 08		mov dx,poz1
+ 0000010B  66| 8B 4D 0C		mov cx,poz2
+ 0000010F  2A CA		sub cl,dl
+ 00000111  D0 F9		sar cl,1
+ 00000113  2A EE		sub ch,dh	
+ 00000115  D0 FD		sar ch,1		;U cx je sada vektor koji pokazuje ka zidu
+ 00000117  66| 8B C1		mov ax,cx
+ 0000011A  86 E0		xchg ah,al
+ 0000011C  F6 D8		neg al		;U ax je sada vektor koji pokazuje napred, duz zida, ovo je okretanje na levo, neg ah je desno
+ 0000011E  66| 89 45 FE		mov WORD PTR dir,ax
+ 00000122  EB 1C		jmp search_loop_bypass_check
+ 00000124			search_loop:
+
+ 00000124  50			push eax
+ 00000125  B0 30		mov al, '0'
+ 00000127  E8 FFFFFF08		call maze_write
+ 0000012C  B0 20		mov al, 20h
+ 0000012E  E8 FFFFFF01		call maze_write
+ 00000133  58			pop eax
+
+ 00000134  66| 3B 55 08		cmp dx,poz1
+ 00000138  75 06		jne bypass_dir_check
+ 0000013A  66| 3B 45 FE		cmp ax,dir
+ 0000013E  74 3A		je done_searching
+ 00000140			bypass_dir_check:
+ 00000140			search_loop_bypass_check:
+ 00000140  66| 3B 55 0C		cmp dx,poz2
+ 00000144  74 34		je done_searching
+ 00000146  02 F5		add dh,ch
+ 00000148  02 D1		add dl,cl
+ 0000014A  E8 000002CB		call wall_there	;Ovo je desni zid(pravilo desne strane)
+ 0000014F  74 0A		je @F;ako ga nema okrecem se desno i koracam napred(vec uradjeno)
+ 00000151  86 E9		xchg ch,cl
+ 00000153  F6 DD		neg ch
+ 00000155  86 C4		xchg al,ah
+ 00000157  F6 DC		neg ah
+ 00000159  EB C9		jmp search_loop
+ 0000015B			@@:
+ 0000015B  2A F5		sub dh,ch
+ 0000015D  2A D1		sub dl,cl
+ 0000015F  02 F4		add dh,ah
+ 00000161  02 D0		add dl,al
+ 00000163  E8 000002B2		call wall_there	;Ovo je zid ispred
+ 00000168  74 02		je	@F;Ako ga nema mozemo koracati napred
+ 0000016A  EB B8		jmp search_loop
+ 0000016C			@@:;Ako ga ima okrecemo se u levo
+ 0000016C  2A F4		sub dh,ah
+ 0000016E  2A D0		sub dl,al
+ 00000170  86 E9		xchg ch,cl
+ 00000172  F6 D9		neg cl
+ 00000174  86 C4		xchg al,ah
+ 00000176  F6 D8		neg al
+ 00000178  EB AA		jmp search_loop
+ 0000017A			done_searching:
+ 0000017A  66| 3B 55 0C		cmp dx, poz2
+				ret
+ 0000017E  58		   *	    pop    eax
+ 0000017F  59		   *	    pop    ecx
+ 00000180  5A		   *	    pop    edx
+ 00000181  C9		   *	    leave  
+ 00000182  C2 0008	   *	    ret    00008h
+ 00000185			find_pair ENDP
+
+ 00000185			test_candidate PROC uses eax ecx edx
+ 00000185  50		   *	    push   eax
+ 00000186  51		   *	    push   ecx
+ 00000187  52		   *	    push   edx
+ 00000188  33 C0		xor eax, eax
+ 0000018A  66| A1		mov ax, no_wildcard
+	   00002D9D R
+ 00000190  E8 00000000 E	call RandomRange
+ 00000195  D1 E0		shl eax,1
+ 00000197  05 000029BD R	add eax, OFFSET wildcards
+ 0000019C  33 C9		xor ecx, ecx
+ 0000019E  66| 8B 0D		mov cx, no_wildcard
+	   00002D9D R
+ 000001A5  66| 49		dec cx
+ 000001A7  66| 89 0D		mov no_wildcard, cx
+	   00002D9D R
+ 000001AE  66| D1 E1		shl cx,1
+ 000001B1  81 C1 000029BD R	add ecx, OFFSET wildcards; OFFSET posledje wildcard
+ 000001B7  66| 8B 09		mov cx, WORD PTR[ecx]; Vredost poslednjeg wildcard
+ 000001BA  66| 8B 10		mov dx, WORD PTR[eax]; Pozicija sa kojom radimo     dx
+ 000001BD  66| 89 08		mov WORD PTR[eax], cx; Poslednja zauzima mesto koje je ostalo
+ 000001C0  B0 23		mov al,FILE_WALL_CHAR
+ 000001C2  E8 FFFFFE6D		call maze_write
+ 000001C7  F6 C2 01		test dl,01h
+ 000001CA  75 0C		jnz @F
+ 000001CC  66| 8B C2			mov ax,dx
+ 000001CF  66| 8B CA			mov cx,dx
+ 000001D2  FE C0			inc al
+ 000001D4  FE C9			dec cl
+ 000001D6  EB 0A		jmp t_label
+ 000001D8			@@:
+ 000001D8  66| 8B C2			mov ax,dx
+ 000001DB  66| 8B CA			mov cx,dx
+ 000001DE  FE C4			inc ah
+ 000001E0  FE CD			dec ch
+ 000001E2			t_label:
+
+				INVOKE find_pair, ax, cx
+ 000001E2  83 EC 02	   *	    sub    esp, 002h
+ 000001E5  66| 51	   *	    push   cx
+ 000001E7  83 EC 02	   *	    sub    esp, 002h
+ 000001EA  66| 50	   *	    push   ax
+ 000001EC  E8 FFFFFF0D	   *	    call   find_pair
+ 000001F1  74 07		je dont_remove_wall			;Equals means you're safe
+ 000001F3  B0 20		mov al, FILE_SPACE_CHAR
+ 000001F5  E8 FFFFFE3A		call maze_write
+ 000001FA			dont_remove_wall:
+				ret
+ 000001FA  5A		   *	    pop    edx
+ 000001FB  59		   *	    pop    ecx
+ 000001FC  58		   *	    pop    eax
+ 000001FD  C3		   *	    ret    00000h
+ 000001FE			test_candidate ENDP
+
+
+ 000001FE			generate_maze PROC uses eax
+ 000001FE  50		   *	    push   eax
+ 000001FF  E8 00000000 E	call Randomize
+ 00000204  E8 FFFFFE46		call maze_initialize
+ 00000209  E8 FFFFFEC0		call load_wildcards
+ 0000020E  8B C7		mov eax, edi
+ 00000210  66| A3		mov WORD PTR no_wildcard, ax
+	   00002D9D R
+ 00000216			generate_wall :
+ 00000216  E8 FFFFFF6A		call test_candidate
+ 0000021B  66| 83 3D		cmp no_wildcard, 0
+	   00002D9D R 00
+ 00000223  77 F1		ja generate_wall
+				ret
+ 00000225  58		   *	    pop    eax
+ 00000226  C3		   *	    ret    00000h
+ 00000227			generate_maze ENDP
+
+ 00000227			setup_console PROC
+				LOCAL outHandle : DWORD, scrBuffSize : COORD ; SCREEN_BUFFER_INFO: CONSOLE_SCREEN_BUFFER_INFO
+				LOCAL ConsoleRect : SMALL_RECT
+ 00000227  55		   *	    push   ebp
+ 00000228  8B EC	   *	    mov    ebp, esp
+ 0000022A  83 C4 F0	   *	    add    esp, 0FFFFFFF0h
+				INVOKE GetStdHandle, STD_OUTPUT_HANDLE
+ 0000022D  6A F5	   *	    push    -00000000Bh
+ 0000022F  E8 00000000 E   *	    call   GetStdHandle
+ 00000234  89 45 FC		mov outHandle, eax
+ 00000237  66| C7 45 F8		mov scrBuffSize.X, SCR_WIDTH + 1
+	   00BF
+ 0000023D  66| C7 45 FA		mov scrBuffSize.Y, SCR_HEIGHT 
+	   0032
+ 00000243  66| C7 45 F2		mov ConsoleRect.Top, 0
+	   0000
+ 00000249  66| C7 45 F0		mov ConsoleRect.Left, 0
+	   0000
+ 0000024F  66| C7 45 F6		mov ConsoleRect.Bottom, SCR_HEIGHT-1
+	   0031
+ 00000255  66| C7 45 F4		mov ConsoleRect.Right,SCR_WIDTH
+	   00BE
+				INVOKE SetConsoleScreenBufferSize, outHandle, scrBuffSize
+ 0000025B  FF 75 F8	   *	    push   dword  ptr ss:[ebp]+0FFFFFFF8h
+ 0000025E  FF 75 FC	   *	    push   dword  ptr ss:[ebp]+0FFFFFFFCh
+ 00000261  E8 00000000 E   *	    call   SetConsoleScreenBufferSize
+				INVOKE SetConsoleWindowInfo, outHandle, 1, ADDR ConsoleRect
+ 00000266  8D 45 F0	   *	    lea    eax, SMALL_RECT ptr ss:[ebp]+0FFFFFFF0h
+ 00000269  50		   *	    push   eax
+ 0000026A  6A 01	   *	    push   +000000001h
+ 0000026C  FF 75 FC	   *	    push   dword  ptr ss:[ebp]+0FFFFFFFCh
+ 0000026F  E8 00000000 E   *	    call   SetConsoleWindowInfo
+				ret
+ 00000274  C9		   *	    leave  
+ 00000275  C3		   *	    ret    00000h
+ 00000276			setup_console ENDP
+
+ 00000276			draw_arrow PROC uses EDX EAX	;Draws arrow on screen over maze map after screen is updated, no args
+				;The maze map is not stored explicitly in memory, it is stored in the screen buffer, so the arrow is writen 
+				;seperately so that data is not lost
+ 00000276  52		   *	    push   edx
+ 00000277  50		   *	    push   eax
+ 00000278  B8 00000070			mov eax,COL_ARROW
+ 0000027D  E8 00000000 E	    call SetTextColor	;Sets color used for the arrow
+					;Basically a case statement checking direction and putting the appropriate arrow char in al
+ 00000282  66| 8B 15			mov dx,direction
+	   000029B5 R
+ 00000289  66| 83 FA 01			cmp dx,0001h
+ 0000028D  75 04			jne @F
+ 0000028F  B0 1A			mov al,1Ah	;Right
+ 00000291  EB 1F			jmp finished_choosing_direction
+ 00000293  66| 81 FA 00FF	@@:	cmp dx,00FFh
+ 00000298  75 04			jne @F
+ 0000029A  B0 1B			mov al,1Bh	;Left
+ 0000029C  EB 14			jmp finished_choosing_direction
+ 0000029E  66| 81 FA 0100	@@:	cmp dx,0100h
+ 000002A3  75 04			jne @F
+ 000002A5  B0 19			mov al,19h	;Down
+ 000002A7  EB 09			jmp finished_choosing_direction
+ 000002A9  66| 81 FA FF00	@@:	cmp dx,0FF00h
+ 000002AE  75 02			jne finished_choosing_direction
+ 000002B0  B0 18			mov al,18h	;Up
+ 000002B2			finished_choosing_direction:
+ 000002B2  66| 8B 15			mov dx,position
+	   000029B7 R
+					;The edge of the 3d view, offseted by position in maze gives position in 3d map
+ 000002B9  80 C2 9F			add dl,SCR_3D_WIDTH
+ 000002BC  80 C6 08			add dh,MAZE_Y_OFFSET
+ 000002BF  E8 00000000 E		call GotoXY
+ 000002C4  E8 00000000 E		call WriteChar
+ 000002C9  66| 33 D2			xor dx,dx
+ 000002CC  E8 00000000 E		call GotoXY			;Goes to 0,0 to move cursor out of the way
+ 000002D1  B8 00000007			mov eax,COL_MAZE
+ 000002D6  E8 00000000 E		call SetTextColor	;Sets color for normal writing to screen
+					ret
+ 000002DB  58		   *	    pop    eax
+ 000002DC  5A		   *	    pop    edx
+ 000002DD  C3		   *	    ret    00000h
+ 000002DE			draw_arrow ENDP
+
+ 000002DE			maze_read PROC uses edx; pos passed throug dl, dh, char returned through al
+ 000002DE  52		   *	    push   edx
+ 000002DF  66| B8 0021		mov ax, MAZE_HEIGHT +2
+ 000002E3  F6 E6		mul dh
+ 000002E5  32 F6		xor dh, dh
+ 000002E7  66| 03 C2		add ax, dx
+ 000002EA  0F B7 D0		movzx edx, ax
+ 000002ED  8A 82 0000257E R	mov al, BYTE PTR maze[edx]
+ 000002F3  32 E4		xor ah, ah
+				ret
+ 000002F5  5A		   *	    pop    edx
+ 000002F6  C3		   *	    ret    00000h
+ 000002F7			maze_read ENDP
+
+ 000002F7			print_screen PROC uses EDX	;Writes out entire screen buffer to std out as one string
+				;The matric the screen buffer is stored in ends rows with line breaks making it easy to print to output
+ 000002F7  52		   *	    push   edx
+ 000002F8  33 D2		xor edx,edx
+ 000002FA  E8 00000000 E	call gotoxy
+ 000002FF  BA 00000000 R	mov edx, OFFSET screen_buffer
+ 00000304  E8 00000000 E	call WriteString
+ 00000309  E8 FFFFFF68		call draw_arrow
+				ret
+ 0000030E  5A		   *	    pop    edx
+ 0000030F  C3		   *	    ret    00000h
+ 00000310			print_screen ENDP
+
+ 00000310			clear_buffer PROC uses ECX EDI EAX ;clears the entire screen buffer, and adds line break characters to end of rows
+ 00000310  51		   *	    push   ecx
+ 00000311  57		   *	    push   edi
+ 00000312  50		   *	    push   eax
+ 00000313  B9 0000257E		mov ecx, LENGTH screen_buffer
+ 00000318  BF 00000000 R	mov edi, OFFSET screen_buffer
+ 0000031D  B0 20		mov al, ' '
+ 0000031F  F3/ AA		rep stosb		;Writes ' ' into the entire screen_buffer
+ 00000321  B9 00000031		mov ecx, SCR_HEIGHT-1
+ 00000326  66| B8 0D0A		mov ax, 0d0ah	;Carriage return and line feed characters ready to be placed in string
+ 0000032A  8D 3D FFFFFFFE R	lea edi, [screen_buffer -2]
+ 00000330			setup_line_breaks:
+ 00000330  8D BF 000000C0	lea edi, [edi + SCR_WIDTH + 2]	;Increments by 1 row length
+ 00000336  88 27		mov BYTE PTR[edi], ah
+ 00000338  88 47 01		mov BYTE PTR[edi + 1], al
+ 0000033B  E2 F3		loop setup_line_breaks
+ 0000033D  32 C0		xor al, al
+ 0000033F  A2 0000257D R	mov BYTE PTR[screen_buffer + LENGTH screen_buffer - 1], al
+				ret
+ 00000344  58		   *	    pop    eax
+ 00000345  5F		   *	    pop    edi
+ 00000346  59		   *	    pop    ecx
+ 00000347  C3		   *	    ret    00000h
+ 00000348			clear_buffer ENDP
+
+ 00000348			print_maze_to_file PROC uses ECX EDI EAX EBX; clears the entire screen buffer, and adds line break characters to end of rows
+ 00000348  51		   *	    push   ecx
+ 00000349  57		   *	    push   edi
+ 0000034A  50		   *	    push   eax
+ 0000034B  53		   *	    push   ebx
+ 0000034C  B9 0000001E		mov ecx, MAZE_HEIGHT - 1
+ 00000351  66| B8 0D0A		mov ax, 0d0ah; Carriage return and line feed characters ready to be placed in string
+ 00000355  8D 3D 0000257C R	lea edi, [maze - 2]
+ 0000035B			setup_line_breaks_maze:
+ 0000035B  8D 7F 21		lea edi, [edi + MAZE_HEIGHT + 2]; Increments by 1 row length
+ 0000035E  88 27		mov BYTE PTR[edi], ah
+ 00000360  88 47 01		mov BYTE PTR[edi + 1], al
+ 00000363  E2 F6		loop setup_line_breaks_maze
+ 00000365  32 C0		xor al, al
+ 00000367  A2 000003FF R	mov BYTE PTR[screen_buffer + LENGTH maze - 1], al
+ 0000036C  BA 00002D9F R	mov edx,OFFSET out_file_name 
+ 00000371  E8 00000000 E	call createOutputFile
+ 00000376  B9 000003FF		mov ecx,MAZE_HEIGHT*(MAZE_HEIGHT+2)
+ 0000037B  BA 0000257E R	mov edx,OFFSET maze
+ 00000380  50			push eax
+ 00000381  E8 00000000 E	call WriteToFile
+ 00000386  58			pop eax
+ 00000387  E8 00000000 E	call CloseFile
+ 0000038C  BA 00002DAC R	mov edx,OFFSET out_file_msg
+ 00000391  33 DB		xor ebx,ebx
+ 00000393  E8 00000000 E	call MsgBox
+
+				ret
+ 00000398  5B		   *	    pop    ebx
+ 00000399  58		   *	    pop    eax
+ 0000039A  5F		   *	    pop    edi
+ 0000039B  59		   *	    pop    ecx
+ 0000039C  C3		   *	    ret    00000h
+ 0000039D			print_maze_to_file ENDP
+
+ 0000039D			clear_3d PROC uses ECX EAX	;Clears only 3d view portion of screen buffer, also adds "FOG" character
+ 0000039D  51		   *	    push   ecx
+ 0000039E  50		   *	    push   eax
+ 0000039F  33 D2		xor edx,edx
+ 000003A1			clear_loop_x:
+ 000003A1  32 F6		xor dh,dh
+ 000003A3			clear_loop_y:
+ 000003A3  B0 20		mov al,' '
+ 000003A5  80 FE 1B		cmp dh,SCR_HEIGHT/2+SCR_HEIGHT/(DRAW_DEPTH*2+3)-1
+ 000003A8  7D 07		jge dont_draw_fog
+ 000003AA  80 FE 16		cmp dh,SCR_HEIGHT/2-SCR_HEIGHT/(DRAW_DEPTH*2+3)
+ 000003AD  7E 02		jle dont_draw_fog
+ 000003AF  B0 B0		mov al,CHR_FOG
+ 000003B1			dont_draw_fog:
+ 000003B1  E8 00000011		call write_to_buffer	;Procedure for writing to screen buffer dl -x dh -y al -char
+ 000003B6  FE C6		inc dh
+ 000003B8  80 FE 32		cmp dh,SCR_HEIGHT
+ 000003BB  72 E6		jb clear_loop_y
+ 000003BD  FE C2		inc dl
+ 000003BF  80 FA 9F		cmp dl,SCR_3D_WIDTH
+ 000003C2  72 DD		jb clear_loop_x
+				ret
+ 000003C4  58		   *	    pop    eax
+ 000003C5  59		   *	    pop    ecx
+ 000003C6  C3		   *	    ret    00000h
+ 000003C7			clear_3d ENDP
+
+ 000003C7			.code
+ 000003C7			write_to_buffer PROC uses EDX ;Procedure for writing to screen buffer dl-x dh-y al-char, accepts invalid adresses but does not write
+ 000003C7  52		   *	    push   edx
+ 000003C8  80 FA BE		cmp dl,SCR_WIDTH
+ 000003CB  73 20		jae skip_write_buf	;Check for address out of range
+ 000003CD  80 FE 32		cmp dh,SCR_HEIGHT
+ 000003D0  73 1B		jae skip_write_buf	;Check for address out of range
+ 000003D2  50			push eax			;EAX is needed for multiplication
+ 000003D3  B8 000000C0		mov eax, SCR_WIDTH+2
+ 000003D8  F6 E6		mul dh
+ 000003DA  32 F6		xor dh,dh
+ 000003DC  66| 03 C2		add ax,dx
+ 000003DF  5A			pop edx				;eax is exchanged for edx
+ 000003E0  92			xchg eax,edx
+ 000003E1  81 FA 0000257C	cmp edx,LENGTH screen_buffer-2  
+				;e skip_write_buf	;Ignore also the last character in screen buffer, it is used for NULL 
+ 000003E7  88 82 00000000 R	mov BYTE PTR screen_buffer[edx],al
+ 000003ED			skip_write_buf:
+				ret
+ 000003ED  5A		   *	    pop    edx
+ 000003EE  C3		   *	    ret    00000h
+ 000003EF			write_to_buffer ENDP
+
+ 000003EF			write_to_3d PROC uses EDX EAX X:WORD, Y:WORD, char:WORD	;Writes char to screen_buffer only in 3d view zone
+				;put char to WORD for compatibility, INVOKE had problems passing BYTE, procedure uses lower byte
+ 000003EF  55		   *	    push   ebp
+ 000003F0  8B EC	   *	    mov    ebp, esp
+ 000003F2  52		   *	    push   edx
+ 000003F3  50		   *	    push   eax
+ 000003F4  66| 81 7D 08		cmp X,SCR_3D_WIDTH	;Check addressress out of range
+	   009F
+ 000003FA  73 18		jae skip_write_3d
+ 000003FC  66| 83 7D 0C		cmp Y,SCR_HEIGHT	;Check address out of range
+	   32
+ 00000401  73 11		jae skip_write_3d	
+ 00000403  8A 55 08		mov dl,BYTE PTR X
+ 00000406  8A 75 0C		mov dh,BYTE PTR Y
+ 00000409  33 C0		xor eax,eax
+ 0000040B  66| 8B 45 10		mov ax,char
+ 0000040F  E8 FFFFFFB3		call write_to_buffer
+ 00000414			skip_write_3d:
+				ret
+ 00000414  58		   *	    pop    eax
+ 00000415  5A		   *	    pop    edx
+ 00000416  C9		   *	    leave  
+ 00000417  C2 000C	   *	    ret    0000Ch
+ 0000041A			write_to_3d ENDP
+
+ 0000041A			wall_there PROC uses EDX EAX	;Checks if there is a wall in maze position dl-x dh-y, returns via equals flag
+ 0000041A  52		   *	    push   edx
+ 0000041B  50		   *	    push   eax
+ 0000041C  80 FA 1F		cmp dl,MAZE_HEIGHT	;Check address out of range
+ 0000041F  73 0F		jae skip_read_wall
+ 00000421  80 FE 1F		cmp dh,MAZE_HEIGHT	;Check address out of range
+ 00000424  73 0A		jae skip_read_wall
+ 00000426  E8 FFFFFEB3		call maze_read
+ 0000042B  3C 23		cmp al,FILE_WALL_CHAR
+				ret
+ 0000042D  58		   *	    pop    eax
+ 0000042E  5A		   *	    pop    edx
+ 0000042F  C3		   *	    ret    00000h
+ 00000430			skip_read_wall:
+ 00000430  3B C0		cmp eax,eax		;sets flag on (wall on) in case of outside range
+				ret
+ 00000432  58		   *	    pop    eax
+ 00000433  5A		   *	    pop    edx
+ 00000434  C3		   *	    ret    00000h
+ 00000435			wall_there ENDP
+
+ 00000435			wall_there_rel_to_pos PROC uses ECX EDX	;Checks if there is wall relative to current position, in the current direction, returns via equals flag
+				;dl - x_rel  dh - y_rel
+ 00000435  51		   *	    push   ecx
+ 00000436  52		   *	    push   edx
+ 00000437  66| 8B 0D		mov cx, position
+	   000029B7 R
+ 0000043E  66| 87 CA		xchg cx,dx
+ 00000441  66| 83 3D		cmp direction,0001h
+	   000029B5 R 01
+ 00000449  75 06		jne @F
+ 0000044B  02 D5		add dl,ch
+ 0000044D  02 F1		add dh,cl
+ 0000044F  EB 26		jmp spremio_poziciju
+ 00000451			@@:
+ 00000451  66| 81 3D		cmp direction,0100h
+	   000029B5 R
+	   0100
+ 0000045A  75 06		jne @F
+ 0000045C  2A D1		sub dl,cl
+ 0000045E  02 F5		add dh,ch
+ 00000460  EB 15		jmp spremio_poziciju
+ 00000462			@@:
+ 00000462  66| 81 3D		cmp direction,00FFh
+	   000029B5 R
+	   00FF
+ 0000046B  75 06		jne @F
+ 0000046D  2A D5		sub dl,ch
+ 0000046F  2A F1		sub dh,cl
+ 00000471  EB 04		jmp spremio_poziciju
+ 00000473			@@:
+ 00000473  02 D1		add dl,cl
+ 00000475  2A F5		sub dh,ch
+ 00000477			spremio_poziciju:
+ 00000477  E8 FFFFFF9E		call wall_there
+				ret
+ 0000047C  5A		   *	    pop    edx
+ 0000047D  59		   *	    pop    ecx
+ 0000047E  C3		   *	    ret    00000h
+ 0000047F			wall_there_rel_to_pos ENDP
+
+ 0000047F			read_maze_from_file PROC uses eax edx ecx  ;Reads maze in from memory to file specified by maze_file_name
+ 0000047F  50		   *	    push   eax
+ 00000480  52		   *	    push   edx
+ 00000481  51		   *	    push   ecx
+ 00000482  BA 0000297E R	mov edx,OFFSET maze_file_name
+ 00000487  E8 00000000 E	call OpenInputFile
+ 0000048C  83 F8 FF		cmp eax,INVALID_HANDLE_VALUE
+ 0000048F  74 1C		je error_reading_file
+ 00000491  BA 0000257E R	mov edx,OFFSET maze
+ 00000496  B9 00000400		mov ecx,LENGTH maze
+ 0000049B  50			push eax
+ 0000049C  E8 00000000 E	call ReadFromFile
+ 000004A1  58			pop eax
+ 000004A2  72 09		jc error_reading_file
+ 000004A4  E8 00000000 E	call CloseFile
+				ret
+ 000004A9  59		   *	    pop    ecx
+ 000004AA  5A		   *	    pop    edx
+ 000004AB  58		   *	    pop    eax
+ 000004AC  C3		   *	    ret    00000h
+ 000004AD			error_reading_file:
+ 000004AD  BA 00002987 R	mov edx,OFFSET maze_file_error_msg
+ 000004B2  E8 00000000 E	call MsgBox
+				ret
+ 000004B7  59		   *	    pop    ecx
+ 000004B8  5A		   *	    pop    edx
+ 000004B9  58		   *	    pop    eax
+ 000004BA  C3		   *	    ret    00000h
+ 000004BB			read_maze_from_file ENDP
+
+ 000004BB			get_maze_char PROC uses edx	;Returns char used to represent passed position in maze in map, dl-x dh-h , returns al-char
+ 000004BB  52		   *	    push   edx
+ 000004BC  33 C0				xor eax,eax
+ 000004BE  80 C6 FF				add dh,0FFh
+ 000004C1  80 C2 00				add dl,00h
+ 000004C4  E8 FFFFFF51				call wall_there
+ 000004C9  74 02				je @F
+ 000004CB  04 01				add al,01h
+ 000004CD  80 C6 01		@@:		add dh,01h
+ 000004D0  80 C2 01				add dl,01h
+ 000004D3  E8 FFFFFF42				call wall_there
+ 000004D8  74 02				je @F
+ 000004DA  04 02				add al,02h
+ 000004DC  80 C6 01		@@:		add dh,01h
+ 000004DF  80 C2 FF				add dl,0FFh
+ 000004E2  E8 FFFFFF33				call wall_there
+ 000004E7  74 02				je @F
+ 000004E9  04 04				add al,04h
+ 000004EB  80 C6 FF		@@:		add dh,0FFh
+ 000004EE  80 C2 FF				add dl,0FFh
+ 000004F1  E8 FFFFFF24				call wall_there
+ 000004F6  74 02				je @F
+ 000004F8  04 08				add al,08h
+ 000004FA			@@:		
+				;Odredjivanje karaktera
+ 000004FA  3C 00				cmp al,00h
+ 000004FC  75 04				jne @F
+ 000004FE  B0 20				mov al,20h
+ 00000500  EB 76				jmp done_choosing_char
+ 00000502  3C 01		@@:		cmp al,01h
+ 00000504  75 04				jne @F                       
+ 00000506  B0 D0				mov al,0D0h			
+ 00000508  EB 6E				jmp done_choosing_char       
+ 0000050A  3C 02		@@:		cmp al,02h
+ 0000050C  75 04				jne @F                       
+ 0000050E  B0 C6				mov al,0C6h
+ 00000510  EB 66				jmp done_choosing_char       
+ 00000512  3C 03		@@:		cmp al,03h
+ 00000514  75 04				jne @F                       
+ 00000516  B0 C8				mov al,0C8h
+ 00000518  EB 5E				jmp done_choosing_char       
+ 0000051A  3C 04		@@:		cmp al,04h
+ 0000051C  75 04				jne @F                       
+ 0000051E  B0 D2				mov al,0D2h
+ 00000520  EB 56				jmp done_choosing_char       
+ 00000522  3C 05		@@:		cmp al,05h
+ 00000524  75 04				jne @F                       
+ 00000526  B0 BA				mov al,0BAh
+ 00000528  EB 4E				jmp done_choosing_char       
+ 0000052A  3C 06		@@:		cmp al,06h
+ 0000052C  75 04				jne @F                       
+ 0000052E  B0 C9				mov al,0C9h
+ 00000530  EB 46				jmp done_choosing_char       
+ 00000532  3C 07		@@:		cmp al,07h
+ 00000534  75 04				jne @F                       
+ 00000536  B0 CC				mov al,0CCh
+ 00000538  EB 3E				jmp done_choosing_char       
+ 0000053A  3C 08		@@:		cmp al,08h
+ 0000053C  75 04				jne @F                       
+ 0000053E  B0 B5				mov al,0B5h
+ 00000540  EB 36				jmp done_choosing_char       
+ 00000542  3C 09		@@:		cmp al,09h
+ 00000544  75 04				jne @F                       
+ 00000546  B0 BC				mov al,0BCh
+ 00000548  EB 2E				jmp done_choosing_char       
+ 0000054A  3C 0A		@@:		cmp al,0Ah
+ 0000054C  75 04				jne @F                       
+ 0000054E  B0 CD				mov al,0CDh
+ 00000550  EB 26				jmp done_choosing_char       
+ 00000552  3C 0B		@@:		cmp al,0Bh
+ 00000554  75 04				jne @F                       
+ 00000556  B0 CA				mov al,0CAh
+ 00000558  EB 1E				jmp done_choosing_char       
+ 0000055A  3C 0C		@@:		cmp al,0Ch
+ 0000055C  75 04				jne @F                       
+ 0000055E  B0 BB				mov al,0BBh
+ 00000560  EB 16				jmp done_choosing_char       
+ 00000562  3C 0D		@@:		cmp al,0Dh
+ 00000564  75 04				jne @F                       
+ 00000566  B0 B9				mov al,0B9h
+ 00000568  EB 0E				jmp done_choosing_char       
+ 0000056A  3C 0E		@@:		cmp al,0Eh
+ 0000056C  75 04				jne @F                       
+ 0000056E  B0 CB				mov al,0CBh
+ 00000570  EB 06				jmp done_choosing_char       
+ 00000572  3C 0F		@@:		cmp al,0Fh
+ 00000574  75 02				jne done_choosing_char                      
+ 00000576  B0 CE				mov al,0CEh	
+ 00000578					done_choosing_char:
+						ret
+ 00000578  5A		   *	    pop    edx
+ 00000579  C3		   *	    ret    00000h
+ 0000057A			get_maze_char ENDP
+
+ 0000057A			draw_wall PROC uses EAX EDX ECX x_rel:SBYTE, y_rel:SBYTE	;For passed relative position to player draws walls y-depth x- left to right
+					LOCAL	x_scale:WORD,y_scale:WORD,x1_scale:WORD,y1_scale:WORD,xdif:WORD,ydif:WORD
+					LOCAL	x1:WORD,x2:WORD,y1:WORD,y2:WORD
+ 0000057A  55		   *	    push   ebp
+ 0000057B  8B EC	   *	    mov    ebp, esp
+ 0000057D  83 C4 EC	   *	    add    esp, 0FFFFFFECh
+ 00000580  50		   *	    push   eax
+ 00000581  52		   *	    push   edx
+ 00000582  51		   *	    push   ecx
+ 00000583  66| 0F B6 4D			movzx cx,y_rel
+	   0C
+ 00000588  66| D1 E1			shl cx,1
+ 0000058B  66| 41			inc cx
+ 0000058D  66| B8 009F			mov ax,SCR_3D_WIDTH
+ 00000591  33 D2			xor edx,edx
+ 00000593  66| F7 F1			div cx
+ 00000596  66| D1 E0			shl ax,1
+ 00000599  66| 89 45 FE			mov x_scale,ax		;Generates width of front of wall
+ 0000059D  66| B8 0032			mov ax,SCR_HEIGHT
+ 000005A1  33 D2			xor edx,edx
+ 000005A3  66| F7 F1			div cx
+ 000005A6  66| D1 E0			shl ax,1
+ 000005A9  66| 89 45 FC			mov y_scale,ax		;Generates height of front of wall
+ 000005AD  66| 83 C1 02			add cx,2
+ 000005B1  66| B8 009F			mov ax,SCR_3D_WIDTH
+ 000005B5  33 D2			xor edx,edx
+ 000005B7  66| F7 F1			div cx
+ 000005BA  66| D1 E0			shl ax,1
+ 000005BD  66| 89 45 FA			mov x1_scale,ax		;Generates width of back of wall
+ 000005C1  66| B8 0032			mov ax,SCR_HEIGHT
+ 000005C5  33 D2			xor edx,edx
+ 000005C7  66| F7 F1			div cx
+ 000005CA  66| D1 E0			shl ax,1
+ 000005CD  66| 89 45 F8			mov y1_scale,ax 	;Generates height of back of wall
+ 000005D1  66| 8B 4D FC			mov cx,y_scale
+ 000005D5  66| 2B C8			sub cx,ax
+ 000005D8  66| D1 E9			shr cx,1
+ 000005DB  66| 89 4D F4			mov ydif,cx 		;Finds the distance between tops of back and front wall
+					.IF (x_rel > 0)		;For blocks on the right which have a sidewall on the left
+ 000005DF  80 7D 08 00	   *	    cmp    x_rel, 000h
+ 000005E3  0F 8E 000000B5  *	    jle    @C0001
+ 000005E9  66| 8B 45 FA				mov ax,x1_scale
+ 000005ED  33 D2				xor edx,edx
+ 000005EF  66| 0F BE 4D				movsx cx,x_rel
+	   08
+ 000005F4  66| F7 E9				imul cx
+ 000005F7  66| 8B 55 FA				mov dx,x1_scale
+ 000005FB  66| D1 EA				shr dx,1
+ 000005FE  66| 2B C2				sub ax,dx
+ 00000601  66| 83 C0 4F				add ax, SCR_3D_WIDTH/2
+ 00000605  66| 89 45 F2				mov x1,ax 	;Leftmost position
+ 00000609  66| 8B 45 FE				mov ax,x_scale
+ 0000060D  33 D2				xor edx,edx
+ 0000060F  66| 0F BE 4D				movsx cx,x_rel
+	   08
+ 00000614  66| F7 E9				imul cx
+ 00000617  66| 8B 55 FE				mov dx,x_scale
+ 0000061B  66| D1 EA				shr dx,1
+ 0000061E  66| 2B C2				sub ax, dx
+ 00000621  66| 83 C0 4F				add ax, SCR_3D_WIDTH / 2
+ 00000625  66| 89 45 F0				mov x2,ax 	;Rightmost position
+ 00000629  66| 2B 45 F2				sub ax,x1 
+ 0000062D  66| 89 45 F6				mov xdif,ax ;Difference between horizontal positions to calculate slope of connecting line
+ 00000631  33 C9				xor ecx,ecx
+ 00000633  66| 41				inc cx		;Itterator for x position (counter for slope calculation)
+ 00000635  66| 8B 45 F2				mov ax,x1	;Itterator for x position (x coordinate)
+ 00000639  90					nop			;Complier ignores previous instruction without nop
+ 00000639					x_loop_right:
+ 00000639  90						nop		;Compiler ignores next instruction without nop
+ 0000063A  51						push ecx	
+ 0000063B  50						push eax
+ 0000063C  33 C0					xor eax,eax
+ 0000063E  66| 8B 45 F4					mov ax,ydif
+ 00000642  66| F7 E1					mul cx
+ 00000645  66| 33 D2					xor dx,dx
+ 00000648  66| F7 75 F6					div xdif	;Correction for sloped line in ax, will be added to y1_scale
+ 0000064C  66| 8B 55 F8					mov dx,y1_scale
+ 00000650  66| D1 EA					shr dx,1
+ 00000653  66| 83 C2 19					add dx,SCR_HEIGHT/2
+ 00000657  66| 03 D0					add dx,ax
+ 0000065A  52						push edx 	;Bottom y position
+ 0000065B  66| 8B 55 F8					mov dx,y1_scale
+ 0000065F  66| D1 EA					shr dx,1
+ 00000662  66| B9 0019					mov cx,SCR_HEIGHT/2
+ 00000666  66| 2B C8					sub cx,ax
+ 00000669  66| 2B CA					sub cx,dx	;Top y position, also y itterator
+ 0000066C  5A						pop edx 	;Retrieved bottom y position, needed for cmp
+ 0000066D  58						pop eax		;Retrieved itterator for x, needed for write operation
+ 0000066E						y_loop_right:
+								INVOKE write_to_3d, ax, cx, char_side_wall	;Writes x and y itterator to 3d view of screen_buffer
+ 0000066E  83 EC 02	   *	    sub    esp, 002h
+ 00000671  66| FF 35
+	   000029BB R	   *	    push   char_side_wall
+ 00000678  83 EC 02	   *	    sub    esp, 002h
+ 0000067B  66| 51	   *	    push   cx
+ 0000067D  83 EC 02	   *	    sub    esp, 002h
+ 00000680  66| 50	   *	    push   ax
+ 00000682  E8 FFFFFD68	   *	    call   write_to_3d
+ 00000687  66| 41						inc cx
+ 00000689  66| 3B CA						cmp cx,dx
+ 0000068C  7C E0						jl y_loop_right
+ 0000068E  59						pop ecx
+ 0000068F  66| 40					inc ax 
+ 00000691  66| 41					inc cx
+ 00000693  66| 3B 45 F0					cmp ax,x2
+ 00000697  7E A0					jle x_loop_right
+					.ELSEIF (x_rel < 0)		;For blocks on the left which have a sidewall on the right
+ 00000699  E9 000000BA	   *	    jmp    @C0003
+ 0000069E		   *@C0001:
+ 0000069E  80 7D 08 00	   *	    cmp    x_rel, 000h
+ 000006A2  0F 8D 000000B0  *	    jge    @C0004
+ 000006A8  66| 8B 45 FE				mov ax,x_scale
+ 000006AC  33 D2				xor edx,edx
+ 000006AE  66| 0F BE 4D				movsx cx,x_rel
+	   08
+ 000006B3  66| F7 E9				imul cx
+ 000006B6  66| 8B 55 FE				mov dx,x_scale
+ 000006BA  66| D1 EA				shr dx,1
+ 000006BD  66| 03 C2				add ax, dx
+ 000006C0  66| 83 C0 4F				add ax, SCR_3D_WIDTH / 2
+ 000006C4  66| 89 45 F0				mov x2,ax ;Leftmost position
+ 000006C8  66| 8B 45 FA				mov ax,x1_scale
+ 000006CC  33 D2				xor edx,edx
+ 000006CE  66| 0F BE 4D				movsx cx,x_rel
+	   08
+ 000006D3  66| F7 E9				imul cx
+ 000006D6  66| 8B 55 FA				mov dx,x1_scale
+ 000006DA  66| D1 EA				shr dx,1
+ 000006DD  66| 03 C2				add ax,dx
+ 000006E0  66| 83 C0 4F				add ax, SCR_3D_WIDTH/2
+ 000006E4  66| 89 45 F2				mov x1,ax	;Rightmost position
+ 000006E8  66| 2B 45 F0				sub ax,x2
+ 000006EC  66| 89 45 F6				mov xdif,ax	;Difference between horizontal positions to calculate slope of connecting line
+ 000006F0  33 C9				xor ecx,ecx
+ 000006F2  66| 41				inc cx		;Itterator for x position (counter for slope calculation)
+ 000006F4  66| 8B 45 F2				mov ax,x1   ;Itterator for x position (x coordinate)
+ 000006F8  90					nop         ;Complier ignores previous instruction without nop
+ 000006F8					x_loop_left:
+ 000006F8  90						nop     ;Compiler ignores next instruction without nop
+ 000006F9  51						push ecx	
+ 000006FA  50						push eax
+ 000006FB  33 C0					xor eax,eax
+ 000006FD  66| 8B 45 F4					mov ax,ydif
+ 00000701  66| F7 E1					mul cx
+ 00000704  66| 33 D2					xor dx,dx
+ 00000707  66| F7 75 F6					div xdif	;Correction for sloped line in ax, will be added to y1_scale
+ 0000070B  66| 8B 55 F8					mov dx,y1_scale
+ 0000070F  66| D1 EA					shr dx,1
+ 00000712  66| 83 C2 19					add dx,SCR_HEIGHT/2
+ 00000716  66| 03 D0					add dx,ax
+ 00000719  52						push edx	;Bottom y position
+ 0000071A  66| 8B 55 F8					mov dx,y1_scale	
+ 0000071E  66| D1 EA					shr dx,1        
+ 00000721  66| B9 0019					mov cx,SCR_HEIGHT/2
+ 00000725  66| 2B C8					sub cx,ax       
+ 00000728  66| 2B CA					sub cx,dx	;Top y position, also y itterator
+ 0000072B  5A						pop edx		;Retrieved bottom y position, needed for cmp
+ 0000072C  58						pop eax		;Retrieved itterator for x, needed for write operation
+ 0000072D						y_loop_left:
+								INVOKE write_to_3d, ax, cx, char_side_wall	;Writes x and y itterator to 3d view of screen_buffer
+ 0000072D  83 EC 02	   *	    sub    esp, 002h
+ 00000730  66| FF 35
+	   000029BB R	   *	    push   char_side_wall
+ 00000737  83 EC 02	   *	    sub    esp, 002h
+ 0000073A  66| 51	   *	    push   cx
+ 0000073C  83 EC 02	   *	    sub    esp, 002h
+ 0000073F  66| 50	   *	    push   ax
+ 00000741  E8 FFFFFCA9	   *	    call   write_to_3d
+ 00000746  66| 41						inc cx
+ 00000748  66| 3B CA						cmp cx,dx
+ 0000074B  7C E0						jl y_loop_left
+ 0000074D  59						pop ecx
+ 0000074E  66| 48					dec ax 
+ 00000750  66| 41					inc cx
+ 00000752  66| 3B 45 F0					cmp ax,x2
+ 00000756  7D A0					jge x_loop_left
+					.ENDIF
+ 00000758		   *@C0004:
+ 00000758		   *@C0003:
+					;Drawing facing wall, acording to x_scale and y_scale
+ 00000758  33 C0			xor eax,eax
+ 0000075A  66| 0F BE 45			movsx ax,x_rel
+	   08
+ 0000075F  66| F7 65 FE			mul x_scale
+ 00000763  66| 83 C0 4F			add ax, SCR_3D_WIDTH/2
+ 00000767  66| 8B 55 FE			mov dx,x_scale
+ 0000076B  66| D1 EA			shr dx,1
+ 0000076E  66| 03 C2			add ax,dx
+ 00000771  66| 89 45 F0			mov x2,ax	;Rightmost x position
+ 00000775  66| 2B 45 FE			sub ax,x_scale
+ 00000779  66| 89 45 F2			mov x1,ax	;Leftmost x position
+ 0000077D  66| 8B 45 FC			mov ax,y_scale
+ 00000781  66| D1 E8			shr ax,1
+ 00000784  66| 83 C0 19			add ax, SCR_HEIGHT/2
+ 00000788  66| 89 45 EC			mov y2,ax	;Uppermost y position
+ 0000078C  66| 2B 45 FC			sub ax, y_scale
+ 00000790  66| 89 45 EE			mov y1,ax	;Lowest y position
+ 00000794  66| 8B 45 F2			mov ax,x1
+ 00000798  66| 40			inc ax
+ 0000079A				x_loop_center:
+ 0000079A  66| 8B 4D EE				mov cx,y1
+ 0000079E					y_loop_center:
+							INVOKE write_to_3d, ax, cx, char_facing_wall	;ax is x itterator, cx is y itterator
+ 0000079E  83 EC 02	   *	    sub    esp, 002h
+ 000007A1  66| FF 35
+	   000029B9 R	   *	    push   char_facing_wall
+ 000007A8  83 EC 02	   *	    sub    esp, 002h
+ 000007AB  66| 51	   *	    push   cx
+ 000007AD  83 EC 02	   *	    sub    esp, 002h
+ 000007B0  66| 50	   *	    push   ax
+ 000007B2  E8 FFFFFC38	   *	    call   write_to_3d
+ 000007B7  66| 41					inc cx
+ 000007B9  66| 3B 4D EC					cmp cx,y2
+ 000007BD  7C DF					jl y_loop_center
+ 000007BF  66| 40				inc ax
+ 000007C1  66| 3B 45 F0				cmp ax,x2
+ 000007C5  7E D3				jle x_loop_center
+					ret
+ 000007C7  59		   *	    pop    ecx
+ 000007C8  5A		   *	    pop    edx
+ 000007C9  58		   *	    pop    eax
+ 000007CA  C9		   *	    leave  
+ 000007CB  C2 0008	   *	    ret    00008h
+ 000007CE			draw_wall ENDP
+
+ 000007CE			build_3d_view PROC uses edx	;Procedure that checks neighboring walls and calls draw_wall for relevant walls that are there
+ 000007CE  52		   *	    push   edx
+ 000007CF  E8 FFFFFBC9			call clear_3d		;First clears the 3d view of screen_buffer
+ 000007D4  B6 06			mov dh, DRAW_DEPTH	;Goes from farthest wall to closest to avoid wrong character overlap y_rel = 4 3 2 1 0
+ 000007D6				y_loop_build:		;Alson has to toggle from positive to negative x_rel to avoid overlap x_rel = -2 2 -1 1 0 
+ 000007D6  B2 FD			mov dl, -DRAW_WIDTH
+ 000007D8				x_loop_build:
+ 000007D8  E8 FFFFFC58			call wall_there_rel_to_pos
+ 000007DD  75 0B			jne @F
+					INVOKE draw_wall,dl, dh		;dl and dh are used as x_rel and y_rel itterators to draw a wall
+ 000007DF  8A C6	   *	    mov    al, dh
+ 000007E1  50		   *	    push   eax
+ 000007E2  8A C2	   *	    mov    al, dl
+ 000007E4  50		   *	    push   eax
+ 000007E5  E8 FFFFFD90	   *	    call   draw_wall
+ 000007EA			@@:
+ 000007EA  F6 DA			neg dl
+ 000007EC  E8 FFFFFC44			call wall_there_rel_to_pos
+ 000007F1  75 0B			jne @F
+					INVOKE draw_wall,dl, dh		;Done once more with a negated x_rel
+ 000007F3  8A C6	   *	    mov    al, dh
+ 000007F5  50		   *	    push   eax
+ 000007F6  8A C2	   *	    mov    al, dl
+ 000007F8  50		   *	    push   eax
+ 000007F9  E8 FFFFFD7C	   *	    call   draw_wall
+ 000007FE			@@:
+ 000007FE  F6 DA			neg dl						;
+ 00000800  FE C2			inc dl
+ 00000802  80 FA 00			cmp dl,0
+ 00000805  7C D1			jl x_loop_build
+ 00000807  E8 FFFFFC29			call wall_there_rel_to_pos
+ 0000080C  75 0B			jne @F
+					INVOKE draw_wall,dl, dh		;At the end done once in the center
+ 0000080E  8A C6	   *	    mov    al, dh
+ 00000810  50		   *	    push   eax
+ 00000811  8A C2	   *	    mov    al, dl
+ 00000813  50		   *	    push   eax
+ 00000814  E8 FFFFFD61	   *	    call   draw_wall
+ 00000819			@@:
+ 00000819  FE CE			dec dh
+ 0000081B  80 FE 00			cmp dh,00h
+ 0000081E  7D B6			jge y_loop_build
+					ret
+ 00000820  5A		   *	    pop    edx
+ 00000821  C3		   *	    ret    00000h
+ 00000822			build_3d_view ENDP
+
+
+				;
+				;
+				;		MAIN 			
+				;
+				;
+ 00000822			.code
+ 00000822			main proc
+ 00000822			.code
+
+ 00000822  E8 FFFFFA00		call setup_console
+
+				;Sets up text color and refreshes screen to apply
+ 00000827  B8 00000007		mov eax,COL_MAZE
+ 0000082C  E8 00000000 E	call SetTextColor
+ 00000831  E8 00000000 E	call Clrscr
+				;Reads maze from file maze_file_name and sets up initial screen
+				;call read_maze_from_file
+ 00000836  E8 FFFFF9C3		call generate_maze
+ 0000083B  E8 FFFFFAD0		call clear_buffer
+ 00000840  E8 FFFFFF89		call build_3d_view
+ 00000845  E8 FFFFFAAD		call print_screen
+ 0000084A			main_loop:
+ 0000084A  B8 00000014			mov eax, POLLING_PERIOD	;Waits a little bit before checking for characcter again
+ 0000084F  E8 00000000 E		call delay
+ 00000854  E8 00000000 E		call ReadKey
+ 00000859  74 EF			jz main_loop
+ 0000085B  66| 83 FA 25			cmp dx,VK_LEFT
+ 0000085F  74 30			je handle_left
+ 00000861  66| 83 FA 27			cmp dx,VK_RIGHT
+ 00000865  74 53			je handle_right
+ 00000867  66| 83 FA 26			cmp dx,VK_UP
+ 0000086B  0F 84 000000B3		je handle_up
+ 00000871  66| 83 FA 20			cmp dx, VK_SPACE
+ 00000875  74 69			je handle_space
+ 00000877  3C 6E			cmp al, 'n'
+ 00000879  0F 84 00000086		je handle_n
+ 0000087F  3C 66			cmp al, 'f'
+ 00000881  0F 84 0000008A		je handle_f
+ 00000887  3C 6F			cmp al, 'o'
+ 00000889  0F 84 0000008E		je handle_o
+ 0000088F  EB B9			jmp main_loop
+ 00000891				handle_left:	;Rotates direction vector and changes characters the walls are drawn with
+ 00000891  66| A1			mov ax,char_facing_wall
+	   000029B9 R
+ 00000897  66| 87 05			xchg char_side_wall,ax
+	   000029BB R
+ 0000089E  66| 87 05			xchg char_facing_wall,ax
+	   000029B9 R
+ 000008A5  66| A1			mov ax, direction
+	   000029B5 R
+ 000008AB  86 C4			xchg al,ah
+ 000008AD  F6 DC			neg ah
+ 000008AF  66| A3			mov direction, ax
+	   000029B5 R
+ 000008B5  E9 000000A4			jmp update_display
+ 000008BA				handle_right:	;Rotates direction vector and changes characters the walls are drawn with
+ 000008BA  66| A1			mov ax,char_facing_wall
+	   000029B9 R
+ 000008C0  66| 87 05			xchg char_side_wall,ax
+	   000029BB R
+ 000008C7  66| 87 05			xchg char_facing_wall,ax
+	   000029B9 R
+ 000008CE  66| A1			mov ax, direction
+	   000029B5 R
+ 000008D4  86 C4			xchg al,ah
+ 000008D6  F6 D8			neg al
+ 000008D8  66| A3			mov direction, ax
+	   000029B5 R
+ 000008DE  EB 7E			jmp update_display
+ 000008E0				handle_space:		;Adds current position to maze map, adds direction to current position and checks for collision, if none, updates position
+ 000008E0  66| 8B 15			mov dx, position
+	   000029B7 R
+ 000008E7  66| A1			mov ax,direction
+	   000029B5 R
+ 000008ED  52				push edx
+ 000008EE  02 D0			add dl,al
+ 000008F0  02 F4			add dh,ah
+ 000008F2  E8 FFFFFB23			call wall_there
+ 000008F7  B0 20			mov al,FILE_SPACE_CHAR
+ 000008F9  74 02			je @F
+ 000008FB  B0 23			mov al,FILE_WALL_CHAR
+ 000008FD				@@:
+ 000008FD  E8 FFFFF732			call maze_write
+ 00000902  5A				pop edx
+ 00000903  EB 59			jmp update_display
+ 00000905				handle_n:
+ 00000905  E8 FFFFF8F4			call generate_maze
+ 0000090A  E8 FFFFFA01			call clear_buffer
+ 0000090F  EB 4D			jmp update_display
+ 00000911				handle_f:
+ 00000911  E8 FFFFFB69			call read_maze_from_file
+ 00000916  E8 FFFFF9F5			call clear_buffer
+ 0000091B  EB 41			jmp update_display
+ 0000091D				handle_o:
+ 0000091D  E8 FFFFFA26			call print_maze_to_file
+ 00000922  EB 3A			jmp update_display
+ 00000924				handle_up:		;Adds current position to maze map, adds direction to current position and checks for collision, if none, updates position
+ 00000924  66| 8B 15			mov dx, position
+	   000029B7 R
+ 0000092B  E8 FFFFFB8B			call get_maze_char
+ 00000930  80 C2 9F			add dl,SCR_3D_WIDTH
+ 00000933  80 C6 08			add dh,MAZE_Y_OFFSET
+ 00000936  E8 FFFFFA8C			call write_to_buffer
+ 0000093B  66| 8B 15			mov dx,position
+	   000029B7 R
+ 00000942  66| A1			mov ax, direction
+	   000029B5 R
+ 00000948  02 D0			add dl,al
+ 0000094A  02 F4			add dh,ah
+ 0000094C  E8 FFFFFAC9			call wall_there
+ 00000951  0F 84 FFFFFEF3		je main_loop
+ 00000957  66| 89 15			mov position, dx
+	   000029B7 R
+ 0000095E				update_display:	
+					;Screen updating after applied changes
+ 0000095E  E8 FFFFFE6B			call build_3d_view
+ 00000963  E8 FFFFF98F			call print_screen
+ 00000968  E9 FFFFFEDD			jmp main_loop
+ 0000096D			main endp
+				end main
+Microsoft (R) Macro Assembler Version 14.14.26431.0	    09/14/19 19:31:12
+RE_Projekat.asm						     Symbols 2 - 1
+
+
+
+
+Structures and Unions:
+
+                N a m e                  Size
+                                         Offset      Type
+
+CONSOLE_CURSOR_INFO  . . . . . .	 00000008
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+  bVisible . . . . . . . . . . .	 00000004	 DWord
+CONSOLE_SCREEN_BUFFER_INFO . . .	 00000016
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+  dwCursorPosition . . . . . . .	 00000004	 DWord
+  wAttributes  . . . . . . . . .	 00000008	 Word
+  srWindow . . . . . . . . . . .	 0000000A	 QWord
+  dwMaximumWindowSize  . . . . .	 00000012	 DWord
+COORD  . . . . . . . . . . . . .	 00000004
+  X  . . . . . . . . . . . . . .	 00000000	 Word
+  Y  . . . . . . . . . . . . . .	 00000002	 Word
+FILETIME . . . . . . . . . . . .	 00000008
+  loDateTime . . . . . . . . . .	 00000000	 DWord
+  hiDateTime . . . . . . . . . .	 00000004	 DWord
+FOCUS_EVENT_RECORD . . . . . . .	 00000004
+  bSetFocus  . . . . . . . . . .	 00000000	 DWord
+FPU_ENVIRON  . . . . . . . . . .	 0000001C
+  controlWord  . . . . . . . . .	 00000000	 Word
+  statusWord . . . . . . . . . .	 00000004	 Word
+  tagWord  . . . . . . . . . . .	 00000008	 Word
+  instrPointerOffset . . . . . .	 0000000C	 DWord
+  instrPointerSelector . . . . .	 00000010	 DWord
+  operandPointerOffset . . . . .	 00000014	 DWord
+  operandPointerSelector . . . .	 00000018	 Word
+INPUT_RECORD . . . . . . . . . .	 00000014
+  EventType  . . . . . . . . . .	 00000000	 Word
+  Event  . . . . . . . . . . . .	 00000004	 XmmWord
+  bKeyDown . . . . . . . . . . .	 00000000	 DWord
+  wRepeatCount . . . . . . . . .	 00000004	 Word
+  wVirtualKeyCode  . . . . . . .	 00000006	 Word
+  wVirtualScanCode . . . . . . .	 00000008	 Word
+  uChar  . . . . . . . . . . . .	 0000000A	 Word
+  UnicodeChar  . . . . . . . . .	 00000000	 Word
+  AsciiChar  . . . . . . . . . .	 00000000	 Byte
+  dwControlKeyState  . . . . . .	 0000000C	 DWord
+  dwMousePosition  . . . . . . .	 00000000	 DWord
+  dwButtonState  . . . . . . . .	 00000004	 DWord
+  dwMouseControlKeyState . . . .	 00000008	 DWord
+  dwEventFlags . . . . . . . . .	 0000000C	 DWord
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+  dwCommandId  . . . . . . . . .	 00000000	 DWord
+  bSetFocus  . . . . . . . . . .	 00000000	 DWord
+KEY_EVENT_RECORD . . . . . . . .	 00000010
+  bKeyDown . . . . . . . . . . .	 00000000	 DWord
+  wRepeatCount . . . . . . . . .	 00000004	 Word
+  wVirtualKeyCode  . . . . . . .	 00000006	 Word
+  wVirtualScanCode . . . . . . .	 00000008	 Word
+  uChar  . . . . . . . . . . . .	 0000000A	 Word
+  UnicodeChar  . . . . . . . . .	 00000000	 Word
+  AsciiChar  . . . . . . . . . .	 00000000	 Byte
+  dwControlKeyState  . . . . . .	 0000000C	 DWord
+MENU_EVENT_RECORD  . . . . . . .	 00000004
+  dwCommandId  . . . . . . . . .	 00000000	 DWord
+MOUSE_EVENT_RECORD . . . . . . .	 00000010
+  dwMousePosition  . . . . . . .	 00000000	 DWord
+  dwButtonState  . . . . . . . .	 00000004	 DWord
+  dwMouseControlKeyState . . . .	 00000008	 DWord
+  dwEventFlags . . . . . . . . .	 0000000C	 DWord
+SMALL_RECT . . . . . . . . . . .	 00000008
+  Left . . . . . . . . . . . . .	 00000000	 Word
+  Top  . . . . . . . . . . . . .	 00000002	 Word
+  Right  . . . . . . . . . . . .	 00000004	 Word
+  Bottom . . . . . . . . . . . .	 00000006	 Word
+SYSTEMTIME . . . . . . . . . . .	 00000010
+  wYear  . . . . . . . . . . . .	 00000000	 Word
+  wMonth . . . . . . . . . . . .	 00000002	 Word
+  wDayOfWeek . . . . . . . . . .	 00000004	 Word
+  wDay . . . . . . . . . . . . .	 00000006	 Word
+  wHour  . . . . . . . . . . . .	 00000008	 Word
+  wMinute  . . . . . . . . . . .	 0000000A	 Word
+  wSecond  . . . . . . . . . . .	 0000000C	 Word
+  wMilliseconds  . . . . . . . .	 0000000E	 Word
+WINDOW_BUFFER_SIZE_RECORD  . . .	 00000004
+  dwSize . . . . . . . . . . . .	 00000000	 DWord
+
+
+Segments and Groups:
+
+                N a m e                 Size     Length   Align   Combine Class
+
+FLAT . . . . . . . . . . . . . .	GROUP
+STACK  . . . . . . . . . . . . .	32 Bit	 00001000 Para	  Stack	  'STACK'	 
+_DATA  . . . . . . . . . . . . .	32 Bit	 00002DBF Para	  Public  'DATA'	
+_TEXT  . . . . . . . . . . . . .	32 Bit	 0000096D Para	  Public  'CODE'	
+
+
+Procedures, parameters, and locals:
+
+                N a m e                 Type     Value    Attr
+
+CloseFile  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+CloseHandle  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Clrscr . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+CreateFileA  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+CreateOutputFile . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Crlf . . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Delay  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+DumpMem  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+DumpRegs . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ExitProcess  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FileTimeToDosDateTime  . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FileTimeToSystemTime . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FlushConsoleInputBuffer  . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+FormatMessageA . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetCommandLineA  . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetCommandTail . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleCP . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleCursorInfo . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleMode . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetConsoleScreenBufferInfo . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetDateTime  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetFileTime  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetKeyState  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetLastError . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetLocalTime . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetMaxXY . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetMseconds  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetNumberOfConsoleInputEvents  .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetProcessHeap . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetStdHandle . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetSystemTime  . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetTextColor . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+GetTickCount . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Gotoxy . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapAlloc  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapCreate . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapDestroy  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapFree . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+HeapSize . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+IsDigit  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+LocalFree  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+MessageBoxA  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+MsgBoxAsk  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+MsgBox . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+OpenInputFile  . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ParseDecimal32 . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ParseInteger32 . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+PeekConsoleInputA  . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Random32 . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+RandomRange  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Randomize  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadChar . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadConsoleA . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadConsoleInputA  . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadDec  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadFile . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadFloat  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadFromFile . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadHex  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadInt  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadKeyFlush . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadKey  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ReadString . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleCursorInfo . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleCursorPosition . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleMode . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleScreenBufferSize . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleTextAttribute  . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleTitleA . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetConsoleWindowInfo . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetFilePointer . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetLocalTime . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SetTextColor . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+ShowFPUStack . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Sleep  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+StrLength  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_compare  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_copy . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_length . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_trim . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+Str_ucase  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+SystemTimeToFileTime . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WaitMsg  . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteBinB  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteBin . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteChar  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteConsoleA  . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteConsoleOutputAttribute  . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteConsoleOutputCharacterA . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteDec . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteFile  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteFloat . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteHexB  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteHex . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteInt . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteStackFrameName  . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteStackFrame  . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteString  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteToFile  . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+WriteWindowsMsg  . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External STDCALL
+build_3d_view  . . . . . . . . .	P Near	 000007CE _TEXT	Length= 00000054 Public STDCALL
+  y_loop_build . . . . . . . . .	L Near	 000007D6 _TEXT	
+  x_loop_build . . . . . . . . .	L Near	 000007D8 _TEXT	
+clear_3d . . . . . . . . . . . .	P Near	 0000039D _TEXT	Length= 0000002A Public STDCALL
+  clear_loop_x . . . . . . . . .	L Near	 000003A1 _TEXT	
+  clear_loop_y . . . . . . . . .	L Near	 000003A3 _TEXT	
+  dont_draw_fog  . . . . . . . .	L Near	 000003B1 _TEXT	
+clear_buffer . . . . . . . . . .	P Near	 00000310 _TEXT	Length= 00000038 Public STDCALL
+  setup_line_breaks  . . . . . .	L Near	 00000330 _TEXT	
+draw_arrow . . . . . . . . . . .	P Near	 00000276 _TEXT	Length= 00000068 Public STDCALL
+  finished_choosing_direction  .	L Near	 000002B2 _TEXT	
+draw_wall  . . . . . . . . . . .	P Near	 0000057A _TEXT	Length= 00000254 Public STDCALL
+  x_rel  . . . . . . . . . . . .	Byte	 bp + 00000008
+  y_rel  . . . . . . . . . . . .	Byte	 bp + 0000000C
+  x_scale  . . . . . . . . . . .	Word	 bp - 00000002
+  y_scale  . . . . . . . . . . .	Word	 bp - 00000004
+  x1_scale . . . . . . . . . . .	Word	 bp - 00000006
+  y1_scale . . . . . . . . . . .	Word	 bp - 00000008
+  xdif . . . . . . . . . . . . .	Word	 bp - 0000000A
+  ydif . . . . . . . . . . . . .	Word	 bp - 0000000C
+  x1 . . . . . . . . . . . . . .	Word	 bp - 0000000E
+  x2 . . . . . . . . . . . . . .	Word	 bp - 00000010
+  y1 . . . . . . . . . . . . . .	Word	 bp - 00000012
+  y2 . . . . . . . . . . . . . .	Word	 bp - 00000014
+  x_loop_right . . . . . . . . .	L Near	 00000639 _TEXT	
+  y_loop_right . . . . . . . . .	L Near	 0000066E _TEXT	
+  x_loop_left  . . . . . . . . .	L Near	 000006F8 _TEXT	
+  y_loop_left  . . . . . . . . .	L Near	 0000072D _TEXT	
+  x_loop_center  . . . . . . . .	L Near	 0000079A _TEXT	
+  y_loop_center  . . . . . . . .	L Near	 0000079E _TEXT	
+find_pair  . . . . . . . . . . .	P Near	 000000FE _TEXT	Length= 00000087 Public STDCALL
+  poz1 . . . . . . . . . . . . .	Word	 bp + 00000008
+  poz2 . . . . . . . . . . . . .	Word	 bp + 0000000C
+  dir  . . . . . . . . . . . . .	Word	 bp - 00000002
+  search_loop  . . . . . . . . .	L Near	 00000124 _TEXT	
+  bypass_dir_check . . . . . . .	L Near	 00000140 _TEXT	
+  search_loop_bypass_check . . .	L Near	 00000140 _TEXT	
+  done_searching . . . . . . . .	L Near	 0000017A _TEXT	
+generate_maze  . . . . . . . . .	P Near	 000001FE _TEXT	Length= 00000029 Public STDCALL
+  generate_wall  . . . . . . . .	L Near	 00000216 _TEXT	
+get_maze_char  . . . . . . . . .	P Near	 000004BB _TEXT	Length= 000000BF Public STDCALL
+  done_choosing_char . . . . . .	L Near	 00000578 _TEXT	
+load_wildcards . . . . . . . . .	P Near	 000000CE _TEXT	Length= 00000030 Public STDCALL
+  wildcard_loop  . . . . . . . .	L Near	 000000D4 _TEXT	
+main . . . . . . . . . . . . . .	P Near	 00000822 _TEXT	Length= 0000014B Public STDCALL
+  main_loop  . . . . . . . . . .	L Near	 0000084A _TEXT	
+  handle_left  . . . . . . . . .	L Near	 00000891 _TEXT	
+  handle_right . . . . . . . . .	L Near	 000008BA _TEXT	
+  handle_space . . . . . . . . .	L Near	 000008E0 _TEXT	
+  handle_n . . . . . . . . . . .	L Near	 00000905 _TEXT	
+  handle_f . . . . . . . . . . .	L Near	 00000911 _TEXT	
+  handle_o . . . . . . . . . . .	L Near	 0000091D _TEXT	
+  handle_up  . . . . . . . . . .	L Near	 00000924 _TEXT	
+  update_display . . . . . . . .	L Near	 0000095E _TEXT	
+maze_initialize  . . . . . . . .	P Near	 0000004F _TEXT	Length= 0000007F Public STDCALL
+  blank_loop_y . . . . . . . . .	L Near	 00000055 _TEXT	
+  blank_loop_x . . . . . . . . .	L Near	 00000057 _TEXT	
+  wall_loop_y  . . . . . . . . .	L Near	 0000006F _TEXT	
+  wall_loop_x  . . . . . . . . .	L Near	 00000071 _TEXT	
+  space_loop_y . . . . . . . . .	L Near	 0000008C _TEXT	
+  space_loop_x . . . . . . . . .	L Near	 0000008E _TEXT	
+  loop_init  . . . . . . . . . .	L Near	 000000A8 _TEXT	
+maze_print . . . . . . . . . . .	P Near	 00000000 _TEXT	Length= 00000034 Public STDCALL
+  print_loop . . . . . . . . . .	L Near	 00000009 _TEXT	
+maze_read  . . . . . . . . . . .	P Near	 000002DE _TEXT	Length= 00000019 Public STDCALL
+maze_write . . . . . . . . . . .	P Near	 00000034 _TEXT	Length= 0000001B Public STDCALL
+print_maze_to_file . . . . . . .	P Near	 00000348 _TEXT	Length= 00000055 Public STDCALL
+  setup_line_breaks_maze . . . .	L Near	 0000035B _TEXT	
+print_screen . . . . . . . . . .	P Near	 000002F7 _TEXT	Length= 00000019 Public STDCALL
+printf . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+read_maze_from_file  . . . . . .	P Near	 0000047F _TEXT	Length= 0000003C Public STDCALL
+  error_reading_file . . . . . .	L Near	 000004AD _TEXT	
+scanf  . . . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+setup_console  . . . . . . . . .	P Near	 00000227 _TEXT	Length= 0000004F Public STDCALL
+  outHandle  . . . . . . . . . .	DWord	 bp - 00000004
+  scrBuffSize  . . . . . . . . .	DWord	 bp - 00000008
+  ConsoleRect  . . . . . . . . .	QWord	 bp - 00000010
+test_candidate . . . . . . . . .	P Near	 00000185 _TEXT	Length= 00000079 Public STDCALL
+  t_label  . . . . . . . . . . .	L Near	 000001E2 _TEXT	
+  dont_remove_wall . . . . . . .	L Near	 000001FA _TEXT	
+wall_there_rel_to_pos  . . . . .	P Near	 00000435 _TEXT	Length= 0000004A Public STDCALL
+  spremio_poziciju . . . . . . .	L Near	 00000477 _TEXT	
+wall_there . . . . . . . . . . .	P Near	 0000041A _TEXT	Length= 0000001B Public STDCALL
+  skip_read_wall . . . . . . . .	L Near	 00000430 _TEXT	
+write_to_3d  . . . . . . . . . .	P Near	 000003EF _TEXT	Length= 0000002B Public STDCALL
+  X  . . . . . . . . . . . . . .	Word	 bp + 00000008
+  Y  . . . . . . . . . . . . . .	Word	 bp + 0000000C
+  char . . . . . . . . . . . . .	Word	 bp + 00000010
+  skip_write_3d  . . . . . . . .	L Near	 00000414 _TEXT	
+write_to_buffer  . . . . . . . .	P Near	 000003C7 _TEXT	Length= 00000028 Public STDCALL
+  skip_write_buf . . . . . . . .	L Near	 000003ED _TEXT	
+wsprintfA  . . . . . . . . . . .	P Near	 00000000 FLAT	Length= 00000000 External C
+
+
+Symbols:
+
+                N a m e                 Type     Value    Attr
+
+@CodeSize  . . . . . . . . . . .	Number	 00000000h   
+@DataSize  . . . . . . . . . . .	Number	 00000000h   
+@Interface . . . . . . . . . . .	Number	 00000003h   
+@Model . . . . . . . . . . . . .	Number	 00000007h   
+@code  . . . . . . . . . . . . .	Text   	 _TEXT
+@data  . . . . . . . . . . . . .	Text   	 FLAT
+@fardata?  . . . . . . . . . . .	Text   	 FLAT
+@fardata . . . . . . . . . . . .	Text   	 FLAT
+@stack . . . . . . . . . . . . .	Text   	 FLAT
+ALT_MASK . . . . . . . . . . . .	Number	 00000003h   
+CAPSLOCK_ON  . . . . . . . . . .	Number	 00000080h   
+CHR_EW_WALL  . . . . . . . . . .	Number	 000000B2h   
+CHR_FOG  . . . . . . . . . . . .	Number	 000000B0h   
+CHR_NS_WALL  . . . . . . . . . .	Number	 000000B1h   
+COL_ARROW  . . . . . . . . . . .	Number	 00000070h   
+COL_MAZE . . . . . . . . . . . .	Number	 00000007h   
+CREATE_ALWAYS  . . . . . . . . .	Number	 00000002h   
+CREATE_NEW . . . . . . . . . . .	Number	 00000001h   
+CTRL_MASK  . . . . . . . . . . .	Number	 0000000Ch   
+CreateFile . . . . . . . . . . .	Text   	 CreateFileA
+DO_NOT_SHARE . . . . . . . . . .	Number	 00000000h   
+DRAW_DEPTH . . . . . . . . . . .	Number	 00000006h   
+DRAW_WIDTH . . . . . . . . . . .	Number	 00000003h   
+ENABLE_ECHO_INPUT  . . . . . . .	Number	 00000004h   
+ENABLE_LINE_INPUT  . . . . . . .	Number	 00000002h   
+ENABLE_MOUSE_INPUT . . . . . . .	Number	 00000010h   
+ENABLE_PROCESSED_INPUT . . . . .	Number	 00000001h   
+ENABLE_PROCESSED_OUTPUT  . . . .	Number	 00000001h   
+ENABLE_WINDOW_INPUT  . . . . . .	Number	 00000008h   
+ENABLE_WRAP_AT_EOL_OUTPUT  . . .	Number	 00000002h   
+ENHANCED_KEY . . . . . . . . . .	Number	 00000100h   
+FALSE  . . . . . . . . . . . . .	Number	 00000000h   
+FILE_APPEND_DATA . . . . . . . .	Number	 00000004h   
+FILE_ATTRIBUTE_ARCHIVE . . . . .	Number	 00000020h   
+FILE_ATTRIBUTE_COMPRESSED  . . .	Number	 00000800h   
+FILE_ATTRIBUTE_DEVICE  . . . . .	Number	 00000040h   
+FILE_ATTRIBUTE_DIRECTORY . . . .	Number	 00000010h   
+FILE_ATTRIBUTE_ENCRYPTED . . . .	Number	 00004000h   
+FILE_ATTRIBUTE_HIDDEN  . . . . .	Number	 00000002h   
+FILE_ATTRIBUTE_NORMAL  . . . . .	Number	 00000080h   
+FILE_ATTRIBUTE_NOT_CONTENT_INDEXED .	Number	 00002000h   
+FILE_ATTRIBUTE_OFFLINE . . . . .	Number	 00001000h   
+FILE_ATTRIBUTE_READONLY  . . . .	Number	 00000001h   
+FILE_ATTRIBUTE_REPARSE_POINT . .	Number	 00000400h   
+FILE_ATTRIBUTE_SPARSE_FILE . . .	Number	 00000200h   
+FILE_ATTRIBUTE_SYSTEM  . . . . .	Number	 00000004h   
+FILE_ATTRIBUTE_TEMPORARY . . . .	Number	 00000100h   
+FILE_BEGIN . . . . . . . . . . .	Number	 00000000h   
+FILE_CURRENT . . . . . . . . . .	Number	 00000001h   
+FILE_DELETE_CHILD  . . . . . . .	Number	 00000040h   
+FILE_END . . . . . . . . . . . .	Number	 00000002h   
+FILE_READ_DATA . . . . . . . . .	Number	 00000001h   
+FILE_SHARE_DELETE  . . . . . . .	Number	 00000004h   
+FILE_SHARE_READ  . . . . . . . .	Number	 00000001h   
+FILE_SHARE_WRITE . . . . . . . .	Number	 00000002h   
+FILE_SPACE_CHAR  . . . . . . . .	Number	 00000020h   
+FILE_WALL_CHAR . . . . . . . . .	Number	 00000023h   
+FILE_WRITE_DATA  . . . . . . . .	Number	 00000002h   
+FOCUS_EVENT  . . . . . . . . . .	Number	 00000010h   
+FORMAT_MESSAGE_ALLOCATE_BUFFER .	Number	 00000100h   
+FORMAT_MESSAGE_FROM_SYSTEM . . .	Number	 00001000h   
+FormatMessage  . . . . . . . . .	Text   	 FormatMessageA
+GENERIC_ALL  . . . . . . . . . .	Number	 10000000h   
+GENERIC_EXECUTE  . . . . . . . .	Number	 20000000h   
+GENERIC_READ . . . . . . . . . .	Number	 -80000000h   
+GENERIC_WRITE  . . . . . . . . .	Number	 40000000h   
+GetCommandLine . . . . . . . . .	Text   	 GetCommandLineA
+HANDLE . . . . . . . . . . . . .	Text   	 DWORD
+HEAP_GENERATE_EXCEPTIONS . . . .	Number	 00000004h   
+HEAP_GROWABLE  . . . . . . . . .	Number	 00000002h   
+HEAP_NO_SERIALIZE  . . . . . . .	Number	 00000001h   
+HEAP_REALLOC_IN_PLACE_ONLY . . .	Number	 00000010h   
+HEAP_ZERO_MEMORY . . . . . . . .	Number	 00000008h   
+IDABORT  . . . . . . . . . . . .	Number	 00000003h   
+IDCANCEL . . . . . . . . . . . .	Number	 00000002h   
+IDCLOSE  . . . . . . . . . . . .	Number	 00000008h   
+IDCONTINUE . . . . . . . . . . .	Number	 0000000Bh   
+IDHELP . . . . . . . . . . . . .	Number	 00000009h   
+IDIGNORE . . . . . . . . . . . .	Number	 00000005h   
+IDNO . . . . . . . . . . . . . .	Number	 00000007h   
+IDOK . . . . . . . . . . . . . .	Number	 00000001h   
+IDRETRY  . . . . . . . . . . . .	Number	 00000004h   
+IDTIMEOUT  . . . . . . . . . . .	Number	 00007D00h   
+IDTRYAGAIN . . . . . . . . . . .	Number	 0000000Ah   
+IDYES  . . . . . . . . . . . . .	Number	 00000006h   
+INVALID_HANDLE_VALUE . . . . . .	Number	 -00000001h   
+KBDOWN_FLAG  . . . . . . . . . .	Number	 00000001h   
+KEY_EVENT  . . . . . . . . . . .	Number	 00000001h   
+KEY_MASKS  . . . . . . . . . . .	Number	 0000001Fh   
+LEFT_ALT_PRESSED . . . . . . . .	Number	 00000002h   
+LEFT_CTRL_PRESSED  . . . . . . .	Number	 00000008h   
+MAZE_HEIGHT  . . . . . . . . . .	Number	 0000001Fh   
+MAZE_PATH  . . . . . . . . . . .	Text   	 "maze.txt"
+MAZE_Y_OFFSET  . . . . . . . . .	Number	 00000008h   
+MB_ABORTRETRYIGNORE  . . . . . .	Number	 00000002h   
+MB_APPLMODAL . . . . . . . . . .	Number	 00000000h   
+MB_CANCELTRYCONTINUE . . . . . .	Number	 00000006h   
+MB_DEFBUTTON1  . . . . . . . . .	Number	 00000000h   
+MB_DEFBUTTON2  . . . . . . . . .	Number	 00000100h   
+MB_DEFBUTTON3  . . . . . . . . .	Number	 00000200h   
+MB_DEFBUTTON4  . . . . . . . . .	Number	 00000300h   
+MB_HELP  . . . . . . . . . . . .	Number	 00004000h   
+MB_ICONASTERISK  . . . . . . . .	Number	 00000040h   
+MB_ICONERROR . . . . . . . . . .	Number	 00000010h   
+MB_ICONEXCLAMATION . . . . . . .	Number	 00000030h   
+MB_ICONHAND  . . . . . . . . . .	Number	 00000010h   
+MB_ICONINFORMATION . . . . . . .	Number	 00000040h   
+MB_ICONQUESTION  . . . . . . . .	Number	 00000020h   
+MB_ICONSTOP  . . . . . . . . . .	Number	 00000010h   
+MB_ICONWARNING . . . . . . . . .	Number	 00000030h   
+MB_OKCANCEL  . . . . . . . . . .	Number	 00000001h   
+MB_OK  . . . . . . . . . . . . .	Number	 00000000h   
+MB_RETRYCANCEL . . . . . . . . .	Number	 00000005h   
+MB_SYSTEMMODAL . . . . . . . . .	Number	 00001000h   
+MB_TASKMODAL . . . . . . . . . .	Number	 00002000h   
+MB_USERICON  . . . . . . . . . .	Number	 00000080h   
+MB_YESNOCANCEL . . . . . . . . .	Number	 00000003h   
+MB_YESNO . . . . . . . . . . . .	Number	 00000004h   
+MENU_EVENT . . . . . . . . . . .	Number	 00000008h   
+MOUSE_EVENT  . . . . . . . . . .	Number	 00000002h   
+MessageBox . . . . . . . . . . .	Text   	 MessageBoxA
+NULL . . . . . . . . . . . . . .	Number	 00000000h   
+NUMLOCK_ON . . . . . . . . . . .	Number	 00000020h   
+OPEN_ALWAYS  . . . . . . . . . .	Number	 00000004h   
+OPEN_EXISTING  . . . . . . . . .	Number	 00000003h   
+POLLING_PERIOD . . . . . . . . .	Number	 00000014h   
+PeekConsoleInput . . . . . . . .	Text   	 PeekConsoleInputA
+RIGHT_ALT_PRESSED  . . . . . . .	Number	 00000001h   
+RIGHT_CTRL_PRESSED . . . . . . .	Number	 00000004h   
+ReadConsoleInput . . . . . . . .	Text   	 ReadConsoleInputA
+ReadConsole  . . . . . . . . . .	Text   	 ReadConsoleA
+SCROLLLOCK_ON  . . . . . . . . .	Number	 00000040h   
+SCR_3D_WIDTH . . . . . . . . . .	Number	 0000009Fh   
+SCR_HEIGHT . . . . . . . . . . .	Number	 00000032h   
+SCR_WIDTH  . . . . . . . . . . .	Number	 000000BEh   
+SHIFT_MASK . . . . . . . . . . .	Number	 00000010h   
+SHIFT_PRESSED  . . . . . . . . .	Number	 00000010h   
+STD_ERROR_HANDLE . . . . . . . .	Number	 -0000000Ch   
+STD_INPUT_HANDLE . . . . . . . .	Number	 -0000000Ah   
+STD_OUTPUT_HANDLE  . . . . . . .	Number	 -0000000Bh   
+SetConsoleTitle  . . . . . . . .	Text   	 SetConsoleTitleA
+TAB  . . . . . . . . . . . . . .	Number	 00000009h   
+TRUE . . . . . . . . . . . . . .	Number	 00000001h   
+TRUNCATE_EXISTING  . . . . . . .	Number	 00000005h   
+VK_11  . . . . . . . . . . . . .	Number	 000000BDh   
+VK_12  . . . . . . . . . . . . .	Number	 000000BBh   
+VK_ADD . . . . . . . . . . . . .	Number	 0000006Bh   
+VK_BACK  . . . . . . . . . . . .	Number	 00000008h   
+VK_CANCEL  . . . . . . . . . . .	Number	 00000003h   
+VK_CAPITAL . . . . . . . . . . .	Number	 00000014h   
+VK_CLEAR . . . . . . . . . . . .	Number	 0000000Ch   
+VK_CONTROL . . . . . . . . . . .	Number	 00000011h   
+VK_DECIMAL . . . . . . . . . . .	Number	 0000006Eh   
+VK_DELETE  . . . . . . . . . . .	Number	 0000002Eh   
+VK_DIVIDE  . . . . . . . . . . .	Number	 0000006Fh   
+VK_DOWN  . . . . . . . . . . . .	Number	 00000028h   
+VK_END . . . . . . . . . . . . .	Number	 00000023h   
+VK_ESCAPE  . . . . . . . . . . .	Number	 0000001Bh   
+VK_EXECUTE . . . . . . . . . . .	Number	 0000002Bh   
+VK_F10 . . . . . . . . . . . . .	Number	 00000079h   
+VK_F11 . . . . . . . . . . . . .	Number	 0000007Ah   
+VK_F12 . . . . . . . . . . . . .	Number	 0000007Bh   
+VK_F13 . . . . . . . . . . . . .	Number	 0000007Ch   
+VK_F14 . . . . . . . . . . . . .	Number	 0000007Dh   
+VK_F15 . . . . . . . . . . . . .	Number	 0000007Eh   
+VK_F16 . . . . . . . . . . . . .	Number	 0000007Fh   
+VK_F17 . . . . . . . . . . . . .	Number	 00000080h   
+VK_F18 . . . . . . . . . . . . .	Number	 00000081h   
+VK_F19 . . . . . . . . . . . . .	Number	 00000082h   
+VK_F1  . . . . . . . . . . . . .	Number	 00000070h   
+VK_F20 . . . . . . . . . . . . .	Number	 00000083h   
+VK_F21 . . . . . . . . . . . . .	Number	 00000084h   
+VK_F22 . . . . . . . . . . . . .	Number	 00000085h   
+VK_F23 . . . . . . . . . . . . .	Number	 00000086h   
+VK_F24 . . . . . . . . . . . . .	Number	 00000087h   
+VK_F2  . . . . . . . . . . . . .	Number	 00000071h   
+VK_F3  . . . . . . . . . . . . .	Number	 00000072h   
+VK_F4  . . . . . . . . . . . . .	Number	 00000073h   
+VK_F5  . . . . . . . . . . . . .	Number	 00000074h   
+VK_F6  . . . . . . . . . . . . .	Number	 00000075h   
+VK_F7  . . . . . . . . . . . . .	Number	 00000076h   
+VK_F8  . . . . . . . . . . . . .	Number	 00000077h   
+VK_F9  . . . . . . . . . . . . .	Number	 00000078h   
+VK_HELP  . . . . . . . . . . . .	Number	 0000002Fh   
+VK_HOME  . . . . . . . . . . . .	Number	 00000024h   
+VK_INSERT  . . . . . . . . . . .	Number	 0000002Dh   
+VK_LBUTTON . . . . . . . . . . .	Number	 00000001h   
+VK_LCONTROL  . . . . . . . . . .	Number	 000000A2h   
+VK_LEFT  . . . . . . . . . . . .	Number	 00000025h   
+VK_LMENU . . . . . . . . . . . .	Number	 000000A4h   
+VK_LSHIFT  . . . . . . . . . . .	Number	 000000A0h   
+VK_MENU  . . . . . . . . . . . .	Number	 00000012h   
+VK_MULTIPLY  . . . . . . . . . .	Number	 0000006Ah   
+VK_NEXT  . . . . . . . . . . . .	Number	 00000022h   
+VK_NUMLOCK . . . . . . . . . . .	Number	 00000090h   
+VK_NUMPAD0 . . . . . . . . . . .	Number	 00000060h   
+VK_NUMPAD1 . . . . . . . . . . .	Number	 00000061h   
+VK_NUMPAD2 . . . . . . . . . . .	Number	 00000062h   
+VK_NUMPAD3 . . . . . . . . . . .	Number	 00000063h   
+VK_NUMPAD4 . . . . . . . . . . .	Number	 00000064h   
+VK_NUMPAD5 . . . . . . . . . . .	Number	 00000065h   
+VK_NUMPAD6 . . . . . . . . . . .	Number	 00000066h   
+VK_NUMPAD7 . . . . . . . . . . .	Number	 00000067h   
+VK_NUMPAD8 . . . . . . . . . . .	Number	 00000068h   
+VK_NUMPAD9 . . . . . . . . . . .	Number	 00000069h   
+VK_PAUSE . . . . . . . . . . . .	Number	 00000013h   
+VK_PRINT . . . . . . . . . . . .	Number	 0000002Ah   
+VK_PRIOR . . . . . . . . . . . .	Number	 00000021h   
+VK_RBUTTON . . . . . . . . . . .	Number	 00000002h   
+VK_RCONTROL  . . . . . . . . . .	Number	 000000A3h   
+VK_RETURN  . . . . . . . . . . .	Number	 0000000Dh   
+VK_RIGHT . . . . . . . . . . . .	Number	 00000027h   
+VK_RMENU . . . . . . . . . . . .	Number	 000000A5h   
+VK_RSHIFT  . . . . . . . . . . .	Number	 000000A1h   
+VK_SCROLL  . . . . . . . . . . .	Number	 00000091h   
+VK_SEPARATER . . . . . . . . . .	Number	 0000006Ch   
+VK_SHIFT . . . . . . . . . . . .	Number	 00000010h   
+VK_SNAPSHOT  . . . . . . . . . .	Number	 0000002Ch   
+VK_SPACE . . . . . . . . . . . .	Number	 00000020h   
+VK_SUBTRACT  . . . . . . . . . .	Number	 0000006Dh   
+VK_TAB . . . . . . . . . . . . .	Number	 00000009h   
+VK_UP  . . . . . . . . . . . . .	Number	 00000026h   
+WINDOW_BUFFER_SIZE_EVENT . . . .	Number	 00000004h   
+WriteConsoleOutputCharacter  . .	Text   	 WriteConsoleOutputCharacterA
+WriteConsole . . . . . . . . . .	Text   	 WriteConsoleA
+black  . . . . . . . . . . . . .	Number	 00000000h   
+blue . . . . . . . . . . . . . .	Number	 00000001h   
+brown  . . . . . . . . . . . . .	Number	 00000006h   
+char_facing_wall . . . . . . . .	Word	 000029B9 _DATA	
+char_side_wall . . . . . . . . .	Word	 000029BB _DATA	
+cyan . . . . . . . . . . . . . .	Number	 00000003h   
+direction  . . . . . . . . . . .	Word	 000029B5 _DATA	
+exit . . . . . . . . . . . . . .	Text   	 INVOKE ExitProcess,0
+gray . . . . . . . . . . . . . .	Number	 00000008h   
+green  . . . . . . . . . . . . .	Number	 00000002h   
+lightBlue  . . . . . . . . . . .	Number	 00000009h   
+lightCyan  . . . . . . . . . . .	Number	 0000000Bh   
+lightGray  . . . . . . . . . . .	Number	 00000007h   
+lightGreen . . . . . . . . . . .	Number	 0000000Ah   
+lightMagenta . . . . . . . . . .	Number	 0000000Dh   
+lightRed . . . . . . . . . . . .	Number	 0000000Ch   
+magenta  . . . . . . . . . . . .	Number	 00000005h   
+maze_file_error_msg  . . . . . .	Byte	 00002987 _DATA	
+maze_file_name . . . . . . . . .	Byte	 0000297E _DATA	
+maze . . . . . . . . . . . . . .	Byte	 0000257E _DATA	
+no_wildcard  . . . . . . . . . .	Word	 00002D9D _DATA	
+out_file_msg . . . . . . . . . .	Byte	 00002DAC _DATA	
+out_file_name  . . . . . . . . .	Byte	 00002D9F _DATA	
+position . . . . . . . . . . . .	Word	 000029B7 _DATA	
+red  . . . . . . . . . . . . . .	Number	 00000004h   
+screen_buffer  . . . . . . . . .	Byte	 00000000 _DATA	
+white  . . . . . . . . . . . . .	Number	 0000000Fh   
+wildcards  . . . . . . . . . . .	Word	 000029BD _DATA	
+wsprintf . . . . . . . . . . . .	Text   	 wsprintfA
+yellow . . . . . . . . . . . . .	Number	 0000000Eh   
+
+	   1 Warnings
+	   0 Errors
